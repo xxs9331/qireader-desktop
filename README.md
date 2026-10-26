@@ -1,8 +1,20 @@
-# QiReader Desktop 0.6.1
+# QiReader Desktop 0.6.1（非官方）
 
 QiReader 列表可放在左侧或右侧，原文显示在另一侧；隐藏列表时全宽阅读。独立网页视图不是 iframe，无需批量打开浏览器标签页。
 
 这是非官方 Electron 桌面壳，在线加载 QiReader 与文章原网页，不包含 QiReader 网页或服务端源码，与 QiReader 官方没有隶属关系。使用时需要网络及自己的 QiReader 账号。
+
+## 界面截图
+
+以下为 Windows 隔离演示页面，展示桌面外壳的工具栏、阅读进度及左右布局。页面内容为测试数据，不是实际 QiReader 界面或用户文章，不包含真实账号、订阅或文章正文。
+
+列表放在左侧：
+
+![列表位于左侧，原文位于右侧，顶部显示全部阅读进度](docs/screenshots/list-left.png)
+
+列表放在右侧：
+
+![列表位于右侧，原文位于左侧](docs/screenshots/list-right.png)
 
 ## Windows 使用
 
@@ -65,3 +77,12 @@ Windows 隔离回归可用 PowerShell 执行 `test/windows-smoke.ps1 -RuntimeZip
 应用依赖 QiReader 当前 DOM 中的 `data-is-entry` / `data-is-entry-title` 列表标记；直接进入文章路由时用 `articleView`、`data-article-url` 兜底。页面改版时调整 `reader-preload.cjs`。未改写网页网络请求。
 
 Windows 包暂未签名。正式包应用数据位于 `%APPDATA%/QiReader Desktop`，请不要删除此目录来更新软件。
+
+## 第三方与授权边界
+
+- QiReader 名称及其网站、界面和内容的权利归相应权利人所有。本项目的“非官方”说明不代表获得了 QiReader 的授权或认可。
+- [QiReader 官方仓库](https://github.com/oxyry/qireader/blob/main/package.json) 标注 `UNLICENSED`，不可据此将 QiReader 当作开源软件复制或再发行。本项目仅包含独立桌面外壳及其交互代码。
+- 阅读统计使用已登录会话访问 QiReader 的非公开文档接口。尚未取得官方对第三方客户端及这些接口调用的书面许可；接口可访问不等于获得使用授权，兼容性和使用权限均可能变化。使用者应遵守 QiReader 及文章来源站点适用的条款。
+- Electron 使用 [MIT 许可证](https://github.com/electron/electron/blob/main/LICENSE)。Windows 包保留运行时附带的 `LICENSE` 和 `LICENSES.chromium.html`；这些是第三方组件声明，不是 QiReader 的授权，也不构成本项目对所有法律风险的保证。
+
+本仓库没有为自有代码另行指定开源许可证；公开可见不等于授予任意复制、修改、再发行的许可。上述说明不是法律意见。
