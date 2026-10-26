@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QiReader Desktop 0.6.1</title>
+  <link rel="stylesheet" href="shell.css">
+</head>
+<body>
+  <header>
+    <div class="toolbar-left">
+    <button id="toggle-list" title="收起列表" aria-label="收起列表" aria-expanded="true">▾</button>
+    <button id="list-side" title="将列表移到右侧">列表置右</button>
+    <div class="zoom" id="list-zoom-controls"><span>列表</span><button data-pane="reader" data-zoom="-10" aria-label="缩小列表">−</button><button id="reader-zoom" data-pane="reader" data-zoom="0" title="恢复默认缩放">100%</button><button data-pane="reader" data-zoom="10" aria-label="放大列表">＋</button></div>
+    </div>
+    <div class="toolbar-center">
+      <div id="reading-status">
+        <div class="progress-line">
+          <button id="progress-period" title="切换今日／本周／全部" aria-label="切换今日／本周／全部统计">今日</button>
+          <button id="progress-count" title="点击重新同步统计" aria-label="重新同步阅读统计">同步中…</button>
+          <button id="progress-older" hidden title="打开稍后阅读列表，查看往期文章"></button>
+        </div>
+        <progress id="reading-progress" max="1" aria-label="稍后阅读完成进度"></progress>
+      </div>
+      <button id="error" hidden title="点击关闭提示" role="alert"></button>
+    </div>
+    <div class="toolbar-right">
+    <div class="zoom original-zoom"><span>字号</span><button data-pane="original" data-zoom="-10" aria-label="缩小原文">−</button><button id="original-zoom" data-pane="original" data-zoom="0" title="恢复默认缩放">100%</button><button data-pane="original" data-zoom="10" aria-label="放大原文">＋</button></div>
+    <button id="external" title="在浏览器打开，可用 Cubox 插件收藏">外部打开 ↗</button>
+    </div>
+  </header>
+  <main><p>选择文章开始阅读</p></main>
+  <img id="reader-preview" class="preview" alt="">
+  <img id="original-preview" class="preview" alt="">
+  <div id="splitter" role="separator" aria-label="拖动调整列表宽度" aria-orientation="vertical" aria-valuemin="180" aria-valuenow="280" tabindex="0"></div>
+  <script src="shell.js"></script>
+</body>
+</html>

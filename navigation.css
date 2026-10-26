@@ -1,0 +1,8 @@
+:root { color-scheme: light; font: 20px "Segoe UI", sans-serif; background: transparent; }
+* { box-sizing: border-box; }
+body { margin: 0; overflow: hidden; }
+nav { display: flex; gap: 4px; padding: 4px; height: 44px; border: 1px solid #dedee4; border-radius: 20px; background: #fffffff2; }
+button { flex: 1; font: inherit; color: #494450; background: transparent; border: 0; border-radius: 16px; cursor: pointer; }
+button:hover { background: #eeeaf5; }
+button:disabled { opacity: .3; cursor: default; }
+button:focus-visible { outline: 2px solid #8563ba; outline-offset: -2px; }

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+artifacts/
+VALIDATION.md
+test/cubox-probe.cjs
+test/zhihu-probe.cjs
+.env
+.env.*
+*.log
+reading-progress.json
+reading-progress.json.tmp
