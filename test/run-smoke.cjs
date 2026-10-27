@@ -7,7 +7,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'qireader-desktop-test-'))
 try {
   for (const phase of ['first', 'restart']) {
     const result = spawnSync(require('electron'), [path.join(__dirname, 'smoke.cjs')], {
-      stdio: 'inherit', timeout: 60000,
+      stdio: 'inherit', timeout: 60000, killSignal: 'SIGKILL',
       env: { ...process.env, QIREADER_TEST_PROFILE: profile, QIREADER_TEST_PHASE: phase }
     });
     if (result.error) throw result.error;

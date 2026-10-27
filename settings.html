@@ -9,6 +9,25 @@
 </head>
 <body>
   <h1>设置</h1>
+  <section aria-labelledby="proxy-heading">
+  <h2 id="proxy-heading">网络代理</h2>
+  <form id="proxy">
+    <label for="proxy-mode">连接方式</label>
+    <select id="proxy-mode"><option value="system">跟随系统代理</option><option value="direct">全部直连</option><option value="custom">自定义代理</option></select>
+    <label for="proxy-address">代理地址</label>
+    <input id="proxy-address" maxlength="2048" placeholder="http://127.0.0.1:17897" autocomplete="off" spellcheck="false">
+    <label for="proxy-scope">代理范围</label>
+    <select id="proxy-scope"><option value="selected">仅指定站点走代理，其他直连</option><option value="all">全部站点走代理</option></select>
+    <label for="proxy-domains">需要代理的域名（包含子域名，一行一个）</label>
+    <textarea id="proxy-domains" rows="3" maxlength="8000" placeholder="v2ex.com" spellcheck="false"></textarea>
+    <label class="automatic"><input id="proxy-auto" type="checkbox">文章直连失败时尝试代理，成功后自动添加域名</label>
+    <p>仅在指定站点模式下生效。未列出的站点先直连，连接失败后重试一次；登录失败、HTTP 错误、证书错误不触发自动添加。可删除上方域名来恢复直连。</p>
+    <p>支持 HTTP、HTTPS 和 SOCKS5 代理，不支持填写账号密码。代理程序需先在本机运行。保存后重新加载列表和当前文章，不会清除登录信息。</p>
+    <p>仅影响本软件的网页与请求。QiReader 服务器抓取订阅源失败，需要在服务端解决；登录跳转或资源域名需要代理时，也请加入列表。</p>
+    <p id="proxy-result" role="status" aria-live="polite"></p>
+    <div class="actions"><button id="save-proxy" type="submit" disabled>保存并应用代理</button></div>
+  </form>
+  </section>
   <section aria-labelledby="goals-heading">
   <h2 id="goals-heading">阅读目标</h2>
   <form id="goals">

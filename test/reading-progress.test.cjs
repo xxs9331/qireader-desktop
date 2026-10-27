@@ -336,3 +336,26 @@ test('unified goal form validates both targets before writing either and preserv
   assert.equal(store.summary().total, 50); assert.equal(store.summary('week').automatic, true);
   assert.equal(store.data.limits.pages, 1); assert.equal(server.calls.length, calls);
 });
+
+test('deferred tracking accepts metadata after native removal and uses confirmation time across midnight', async t => {
+  const { store, server } = setup(t);
+  await store.sync(origin);
+  const removed = { ...row('deferred'), tagIds: [] };
+  server.entries = [removed];
+  assert.equal(await store.track(origin, removed.id), null, 'Normal tracking still requires Read Later membership');
+  const confirmedAt = boundaries(now).tomorrow - 1000;
+  let current = confirmedAt - 1000;
+  store.now = () => current;
+  server.hook = async url => { if (url.pathname.startsWith('/api/entry/')) current = confirmedAt + 2000; };
+  const token = await store.track(origin, removed.id, { allowRemoved: true });
+  assert.ok(token);
+  assert.equal(store.summary('all').done, 0, 'Metadata alone is not a completed article');
+  store.complete(token, confirmedAt);
+  assert.equal(store.data.accounts[token.key].entries.find(entry => entry.id === removed.id).completedAt, confirmedAt);
+  assert.equal(store.summary().done, 0, 'Yesterday confirmation must not count towards today after slow statistics');
+  current = confirmedAt;
+  assert.equal(store.summary().done, 1);
+  server.hook = async url => { if (url.pathname.startsWith('/api/entry/')) server.user = 'bob'; };
+  server.entries = [{ ...row('switched'), tagIds: [] }];
+  assert.equal(await store.track(origin, 'switched', { allowRemoved: true }), null, 'Deferred tracking must still reject an account switch');
+});

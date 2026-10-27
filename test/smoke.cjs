@@ -6,6 +6,7 @@ const { createWindow } = require('../main.cjs');
 
 app.setPath('userData', process.env.QIREADER_TEST_PROFILE);
 app.disableHardwareAcceleration();
+app.commandLine.appendSwitch('host-resolver-rules', 'MAP *.test 127.0.0.1');
 app.on('window-all-closed', () => {});
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, message) {
@@ -52,6 +53,9 @@ window.selectArticle = (id, delay = 0) => {
     ({ id, crawledAt: +capturedToday + 1000, timestamp: '9007199254740993999', tagIds: ['later'], status: 1 }));
   statsEntries.push({ id: 'older', crawledAt: +capturedToday - 86400000, timestamp: '9007199254740993998', tagIds: ['later'], status: 1 });
   let statsStatus = 200, streamRequests = 0;
+  let holdTracking = false, releaseTracking, releaseImage;
+  const trackingResponse = new Promise(resolve => { releaseTracking = resolve; });
+  const imageResponse = new Promise(resolve => { releaseImage = resolve; });
   await browserSession.protocol.handle('https', async request => {
     const url = new URL(request.url);
     if (request.method === 'DELETE') {
@@ -66,7 +70,10 @@ window.selectArticle = (id, delay = 0) => {
       if (statsStatus !== 200) return Response.json({}, { status: statsStatus });
       let result;
       if (url.pathname === '/api/session/user') result = { id: 'smoke-account' };
-      else if (url.pathname === '/api/tags') result = { tags: [{ id: 'later', label: '!readlater' }] };
+      else if (url.pathname === '/api/tags') {
+        if (holdTracking) await trackingResponse;
+        result = { tags: [{ id: 'later', label: '!readlater' }] };
+      }
       else if (url.pathname.startsWith('/api/entry/')) result = statsEntries.find(entry => entry.id === decodeURIComponent(url.pathname.split('/').at(-1)));
       else if (url.pathname === '/api/streams/tag-later') result = {
         entries: statsEntries.filter(entry => !confirmedRemovals.includes(entry.id) &&
@@ -77,11 +84,12 @@ window.selectArticle = (id, delay = 0) => {
     }
     if (url.hostname === 'www.qireader.com') return new Response(readerHTML, { headers: { 'content-type': 'text/html; charset=utf-8' } });
     originalRequests.set(url.pathname, (originalRequests.get(url.pathname) || 0) + 1);
+    if (url.pathname === '/slow-image') { await imageResponse; return new Response('', { headers: { 'content-type': 'image/png' } }); }
     if (url.pathname === '/question/pre-three') await thirdResponse;
     if (url.pathname === '/failure' || url.pathname === '/question/network-fail') return Response.error();
     if (['/question/not-found','/question/pre-fail'].includes(url.pathname)) return new Response('Not found', {status:404});
     if (url.pathname === '/question/recycled') await pause(400);
-    return new Response(`<!doctype html><meta charset="utf-8"><title>原文测试</title><style>body{font:20px sans-serif;padding:40px;line-height:1.8}</style><h1>原文 ${url.pathname}</h1><p>独立网页视图 · 模拟知乎原文</p><textarea placeholder="评论输入框"></textarea>`, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+    return new Response(`<!doctype html><meta charset="utf-8"><title>原文测试</title><style>body{font:20px sans-serif;padding:40px;line-height:1.8}</style><h1>原文 ${url.pathname}</h1><p>独立网页视图 · 模拟知乎原文</p>${url.pathname === '/question/success' ? '<img src="/slow-image">' : ''}<textarea placeholder="评论输入框"></textarea>`, { headers: { 'content-type': 'text/html; charset=utf-8' } });
   });
   const desktop = createWindow();
   let clock = +capturedToday + 12 * 3600000;
@@ -123,8 +131,12 @@ window.selectArticle = (id, delay = 0) => {
     const cookies = await browserSession.cookies.get({ url: 'https://www.zhihu.com', name: 'test-session' });
     assert.equal(cookies[0]?.value, 'retained');
     assert.equal(streamRequests, 0, 'Restart must reuse the daily snapshot without scanning');
+    assert.equal(desktop.networkProxy.summary().mode, 'direct');
+    const v2cookies = await browserSession.cookies.get({ url: 'https://www.v2ex.com', name: 'test-session' });
+    assert.equal(v2cookies[0]?.value, 'retained');
     console.log('PASS: login storage and persistent cookies survive process restart');
-    win.destroy();
+    win.close();
+    await until(() => win.isDestroyed(), 'Restart window did not close after storage flush');
     app.quit();
     return;
   }
@@ -157,6 +169,22 @@ window.selectArticle = (id, delay = 0) => {
   assert.equal(desktop.progress.summary('week').total, automaticWeekTotal);
   assert.equal(desktop.progress.summary('week').automatic, true);
   assert.equal(streamRequests, 1, 'Goal edits must not request QiReader lists');
+  const runProxyChecks = require('./proxy-fixture.cjs');
+  assert.equal((await shellContents.executeJavaScript('desktop.request("proxy-configure", {mode:"direct",address:"",scope:"selected",domains:""})')).ok, false);
+  let firstProxy = true;
+  await runProxyChecks(desktop, async input => {
+    if (firstProxy || (input.autoLearn && input.domains === '')) {
+      firstProxy = false;
+      await goalSettings.webContents.executeJavaScript(`document.getElementById('proxy-mode').value='custom';document.getElementById('proxy-mode').dispatchEvent(new Event('change'));document.getElementById('proxy-address').value=${JSON.stringify(input.address)};document.getElementById('proxy-domains').value=${JSON.stringify(input.domains)};document.getElementById('proxy-auto').checked=${input.autoLearn === true};document.getElementById('proxy-auto').dispatchEvent(new Event('change'));document.getElementById('proxy-result').textContent='';document.getElementById('proxy').requestSubmit()`);
+      await until(() => goalSettings.webContents.executeJavaScript('document.getElementById("proxy-result").textContent.includes("已应用")'), 'Proxy form did not apply');
+    } else {
+      const result = await goalSettings.webContents.executeJavaScript(`desktop.request('proxy-configure', ${JSON.stringify(input)})`);
+      assert.equal(result.ok, true, result.error);
+    }
+    await until(() => !rc.isLoading() && rc.getURL().includes('qireader.com'), 'Reader did not recover after proxy change');
+    await until(() => !desktop.progress.syncing, 'Statistics identity check did not settle after proxy change');
+  });
+  assert.equal(streamRequests, 1, 'Proxy changes must not trigger full statistics scans');
   const settingsArtifact = path.join(__dirname, '..', 'artifacts', `settings-${process.platform}.png`);
   fs.mkdirSync(path.dirname(settingsArtifact), { recursive: true });
   await pause(100);
@@ -318,18 +346,21 @@ window.selectArticle = (id, delay = 0) => {
   await shellContents.executeJavaScript('desktop.command("zoom", {pane:"original",change:0})');
   console.log('PASS: independent toolbar/keyboard zoom and reset');
 
+  await restoreTestWindow();
   await shellContents.executeJavaScript('desktop.command("width", 180)');
-  await pause(100);
+  await until(() => reader.getBounds().width === 180, 'Narrow list width did not apply');
   assert.ok(reader.getBounds().width < desktop.original.getBounds().width);
   assert.equal(reader.getBounds().width, 180);
   await shellContents.executeJavaScript('desktop.command("toggle-list")');
-  await pause(100);
+  await until(() => desktop.original.getBounds().width === win.getContentSize()[0], 'List collapse did not apply');
   assert.equal(desktop.original.getBounds().width, win.getContentSize()[0]);
   assert.equal(desktop.original.getBounds().x, 0);
   await shellContents.executeJavaScript('desktop.command("toggle-list"); desktop.command("width", 280)');
-  await pause(100);
+  await until(() => reader.getBounds().x === 0 && reader.getBounds().width === 280, 'List restore did not apply');
   await restoreTestWindow();
   shellContents.focus();
+  await until(() => win.isFocused() && shellContents.isFocused(), 'Drag test window did not receive focus');
+  shellContents.sendInputEvent({type:'mouseMove',x:283,y:220,modifiers:[]});
   shellContents.sendInputEvent({type:'mouseDown',x:283,y:220,button:'left',clickCount:1});
   await until(() => shellContents.executeJavaScript('document.body.classList.contains("previewing")'), 'Drag preview did not start');
   shellContents.sendInputEvent({type:'mouseMove',x:203,y:220,modifiers:['leftButtonDown']});
@@ -358,6 +389,8 @@ window.selectArticle = (id, delay = 0) => {
     throw error;
   }
   shellContents.focus();
+  await until(() => win.isFocused() && shellContents.isFocused(), 'Right drag test window did not receive focus');
+  shellContents.sendInputEvent({type:'mouseMove',x:startRight,y:220,modifiers:[]});
   shellContents.sendInputEvent({type:'mouseDown',x:startRight,y:220,button:'left',clickCount:1});
   await until(() => shellContents.executeJavaScript('document.body.classList.contains("previewing")'), 'Right drag preview missing');
   shellContents.sendInputEvent({type:'mouseMove',x:startRight-80,y:220,modifiers:['leftButtonDown']});
@@ -399,8 +432,17 @@ window.selectArticle = (id, delay = 0) => {
   await until(() => oc().getURL().endsWith('/question/a') && !oc().isLoading(), 'Next article did not recover after network failure');
   console.log('PASS: failed loads are visible and subsequent articles recover');
 
+  holdTracking = true;
   await rc.executeJavaScript(`history.pushState({},'', '/tags/!readlater');document.querySelector('[data-focus-container="articleView"]').replaceChildren();const first=addRow('success');addRow('success-two');first.querySelector('a').click()`);
   await until(() => confirmedRemovals.includes('success'), 'Successful original was not removed through native action');
+  assert.equal(oc().isLoading(), true, 'Fixture must still be waiting for the image');
+  assert.equal(desktop.progress.summary().done, 0, 'Blocked statistics must not invent completion');
+  assert.equal(await rc.executeJavaScript(`document.querySelector('[data-is-entry="success"]')===null`), true);
+  holdTracking = false; releaseTracking();
+  await until(() => desktop.progress.summary().done === 1, 'Deferred statistics did not record the confirmed removal');
+  releaseImage();
+  await until(() => !oc().isLoading(), 'Released image did not settle');
+  console.log('PASS: removal at DOM ready while image and statistics are pending; confirmed progress updates after statistics recovers');
   await until(() => preloaded.get('https://www.zhihu.com/question/success-two')?.ready, 'Read Later next page was not prefetched');
   assert.equal(confirmedRemovals.includes('success-two'), false);
   const laterPreload = preloaded.get('https://www.zhihu.com/question/success-two').view.webContents;
@@ -415,9 +457,11 @@ window.selectArticle = (id, delay = 0) => {
   await until(() => oc().getURL().endsWith('/question/success') && !oc().isLoading(), 'Removed previous article could not be revisited');
   await until(() => navigationContents.executeJavaScript('!document.getElementById("next").disabled'), 'Previous replay did not settle');
   assert.equal(await rc.executeJavaScript('window.removeCalls.filter(id=>id==="success").length'),1);
+  statsStatus = 503;
   await rc.executeJavaScript(`addRow('reject').querySelector('a').click()`);
   await until(() => shellContents.executeJavaScript('document.getElementById("error").textContent.includes("未获服务器确认")'), 'Rejected removal not reported');
   await until(() => rc.executeJavaScript(`Boolean(document.querySelector('[data-is-entry="reject"]'))`), 'Rejected row did not roll back');
+  statsStatus = 200;
   for(const id of ['network-fail','not-found']) {
     await rc.executeJavaScript(`addRow(${JSON.stringify(id)}).querySelector('a').click()`);
     await until(() => shellContents.executeJavaScript('document.getElementById("error").textContent.includes("加载失败")'), 'Original failure missing');
@@ -436,8 +480,6 @@ window.selectArticle = (id, delay = 0) => {
 
   await rc.executeJavaScript('localStorage.setItem("test-login", "retained")');
   await browserSession.cookies.set({ url: 'https://www.zhihu.com', name: 'test-session', value: 'retained', expirationDate: Date.now() / 1000 + 86400 });
-  browserSession.flushStorageData();
-  await browserSession.cookies.flushStore();
   const artifactDir = path.join(__dirname, '..', 'artifacts');
   fs.mkdirSync(artifactDir, { recursive: true });
   await rc.executeJavaScript(`history.pushState({},'', '/tags/reading');document.querySelector('[data-focus-container="articleView"]').replaceChildren();document.querySelector('[data-is-entry-title]').click()`);
@@ -512,7 +554,7 @@ window.selectArticle = (id, delay = 0) => {
     fs.writeFileSync(path.join(artifactDir, 'smoke-win32-right.png'), rightWindow.thumbnail.toPNG());
   }
   const articleContents = [oc(), ...[...preloaded.values()].map(page => page.view.webContents)];
-  win.destroy();
+  win.close();
   await until(() => rc.isDestroyed() && articleContents.every(contents => contents.isDestroyed()) && navigationContents.isDestroyed(), 'Views leaked after window close');
   console.log('PASS: window close releases both remote views');
   app.quit();

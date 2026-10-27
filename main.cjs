@@ -4,6 +4,7 @@ const { pathToFileURL } = require('node:url');
 const { READER_ORIGINS, webURL, readerURL } = require('./policy.cjs');
 const { ReadingProgress } = require('./reading-progress.cjs');
 const { Cubox } = require('./cubox.cjs');
+const { NetworkProxy } = require('./network-proxy.cjs');
 const settingsPath = path.join(__dirname, 'settings.html');
 const settingsURL = pathToFileURL(settingsPath).href;
 
@@ -15,11 +16,13 @@ const remotePreferences = { sandbox: true, contextIsolation: true, nodeIntegrati
 
 function createWindow() {
   const browserSession = session.fromPartition('persist:qireader-desktop');
+  const cuboxSession = session.fromPartition('cubox-api');
+  const networkProxy = new NetworkProxy({ file: path.join(app.getPath('userData'), 'proxy-settings.json'), sessions: [browserSession, cuboxSession] });
   browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   browserSession.setPermissionCheckHandler(() => false);
   const win = new BaseWindow({
     width: 1500, height: 960, minWidth: 960, minHeight: 600,
-    title: 'QiReader Desktop 0.9.1', backgroundColor: '#ffffff'
+    title: 'QiReader Desktop 0.11.1', backgroundColor: '#ffffff'
   });
   const shellView = new WebContentsView({ webPreferences: { ...remotePreferences, backgroundThrottling: false, preload: path.join(__dirname, 'shell-preload.cjs') } });
   const shellContents = shellView.webContents;
@@ -52,7 +55,7 @@ function createWindow() {
   });
   const pendingCompletions = new Map();
   const cubox = new Cubox({ file: path.join(app.getPath('userData'), 'cubox-settings.json'), storage: safeStorage,
-    fetch: (url, options) => session.fromPartition('cubox-api').fetch(url, options) });
+    fetch: (url, options) => cuboxSession.fetch(url, options) });
   let settingsWindow = null, collecting = false;
   cubox.ready.then(publish);
   function openSettings() {
@@ -69,15 +72,22 @@ function createWindow() {
     const contents = settingsWindow?.webContents;
     if (!contents || event.sender !== contents || event.senderFrame !== contents.mainFrame || event.senderFrame.url !== settingsURL) return { ok: false, error: '不允许此操作' };
     try {
-      await cubox.ready;
-      if (message?.action === 'goals-configure') progress.setGoals(message.value);
+      await Promise.all([cubox.ready, networkProxy.ready]);
+      if (message?.action === 'proxy-configure') {
+        if (collecting || cubox.busy) throw new Error('正在收藏，请等本次提交结束后修改代理');
+        await networkProxy.configure(message.value);
+        clearPreloaded(); state.error = '';
+        const current = reader.webContents.getURL();
+        void load(reader.webContents, readerURL(current) ? current : `${READER_ORIGINS[0]}/tags/!readlater`, 'reader');
+        if (selectedURL) void loadPage(originalPage, webURL(original.webContents.getURL()) || selectedURL);
+      } else if (message?.action === 'goals-configure') progress.setGoals(message.value);
       else if (message?.action === 'cubox-configure') await cubox.configure(message.value);
       else if (message?.action === 'cubox-clear') await cubox.clear();
       else if (message?.action === 'cubox-open-web') {
         await shell.openExternal(message.value === 'cc' ? 'https://help.cubox.cc/save/api/' : 'https://help.cubox.pro/save/89d3/');
       } else if (message?.action !== 'settings-info') return { ok: false, error: '未知操作' };
       publish();
-      return { ok: true, info: cubox.summary(), goals: { today: progress.summary('today'), week: progress.summary('week') } };
+      return { ok: true, info: cubox.summary(), proxy: networkProxy.summary(), goals: { today: progress.summary('today'), week: progress.summary('week') } };
     } catch (error) { return { ok: false, error: message?.action === 'cubox-open-web' ? '无法打开浏览器' : error.message }; }
   });
   const changedEntries = new Set();
@@ -127,10 +137,49 @@ function createWindow() {
     state.dragging = dragging;
     publish();
   }
-  function load(contents, url, pane, quiet = false) {
-    return contents.loadURL(url).then(() => true).catch(error => {
+  function navigate(contents, url, page) {
+    if (!page) return contents.loadURL(url).then(() => true);
+    return new Promise((resolve, reject) => {
+      const finish = (error, ok = false) => {
+        contents.removeListener('dom-ready', ready); contents.removeListener('destroyed', destroyed);
+        if (error) reject(error); else resolve(ok);
+      };
+      const ready = () => { if (page.status > 0) finish(null, page.status < 400 && !page.failed); };
+      const destroyed = () => finish(Object.assign(new Error('Page closed'), { code: 'ERR_ABORTED' }));
+      contents.on('dom-ready', ready); contents.once('destroyed', destroyed);
+      // Images may still be loading after the document is available to read.
+      contents.loadURL(url).then(() => finish(null, page.status > 0 && page.status < 400 && !page.failed), error => finish(error));
+    });
+  }
+  async function load(contents, url, pane, quiet = false, page) {
+    await networkProxy.ready;
+    if (win.isDestroyed() || contents.isDestroyed()) return false;
+    if (!networkProxy.active || networkProxy.busy) {
+      if (!quiet) { state.error = '网络设置尚未就绪，请在设置中保存有效的代理配置'; publish(); }
+      return false;
+    }
+    return navigate(contents, url, page).catch(async error => {
       if (error.code === 'ERR_ABORTED' || win.isDestroyed()) return false;
-      if (!quiet) { state.error = `加载失败：${error.code || error.message}`; publish(); }
+      const foregroundOriginal = pane === 'original' && contents === original.webContents;
+      if (foregroundOriginal) {
+        const generation = page.generation;
+        const failedURL = page.failedURL || error.url || url;
+        const current = () => !win.isDestroyed() && !contents.isDestroyed() && page === originalPage && generation === page.generation;
+        const retried = await networkProxy.tryProxy(failedURL, error, async () => {
+          if (!current()) return false;
+          clearPreloaded(); state.error = '正在通过代理重试…'; publish();
+          try {
+            return await navigate(contents, failedURL, page) && current();
+          } catch { return false; }
+        });
+        if (!current()) return false;
+        if (retried) { state.error = ''; publish(); return true; }
+      }
+      if (!quiet || foregroundOriginal) {
+        state.error = networkProxy.error || (pane === 'original' && originalPage.status >= 400 ?
+          `网页加载失败（HTTP ${originalPage.status}）` : `加载失败：${error.code || error.message}`);
+        publish();
+      }
       return false;
     });
   }
@@ -171,7 +220,7 @@ function createWindow() {
   function loadPage(page, url, quiet = false) {
     const generation = ++page.generation;
     page.url = url; page.ready = false; page.failed = false; page.status = 0;
-    page.loading = load(page.view.webContents, url, 'original', quiet).then(ok => {
+    page.loading = load(page.view.webContents, url, 'original', quiet, page).then(ok => {
       if (generation !== page.generation || win.isDestroyed()) return false;
       page.ready = ok && page.status < 400; page.failed = !page.ready;
       if (page === originalPage && page.ready) reconcilePreloads();
@@ -259,7 +308,7 @@ function createWindow() {
       contents.setZoomFactor(state[`${pane}Zoom`] / 100);
     });
     contents.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => {
-      if (page && isMainFrame && !inPlace) page.status = 0;
+      if (page && isMainFrame && !inPlace) { page.status = 0; page.failedURL = ''; }
     });
     contents.on('did-navigate', (_event, url, status) => {
       if (page) { page.status = status; page.failed = status >= 400; }
@@ -271,8 +320,8 @@ function createWindow() {
     contents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
       if (pane === 'original' && foreground() && isMainFrame) { state.url = url; publish(); }
     });
-    contents.on('did-fail-load', (_event, code, description, _url, isMainFrame) => {
-      if (page && isMainFrame && code !== -3) page.failed = true;
+    contents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+      if (page && isMainFrame && code !== -3) { page.failed = true; page.failedURL = url; }
       if (foreground() && isMainFrame && code !== -3) { state.error = `加载失败：${description}`; publish(); }
     });
     contents.on('did-stop-loading', () => { if (foreground()) publish(); });
@@ -295,15 +344,15 @@ function createWindow() {
         new URL(event.senderFrame.url).pathname !== message.route || !webURL(message.url)) return { ok: false };
     const later = message.trackCompletion === true && /^\/tags\/!readlater\/?$/.test(decodeURI(message.route));
     pendingCompletions.delete(message.id);
-    const [loaded, token] = await Promise.all([
-      openOriginal(message.url),
-      later ? progress.track(new URL(event.senderFrame.url).origin, message.id) : null
-    ]);
-    if (later && !token) {
-      state.error = '原文已打开，统计记录暂未同步；文章保留在稍后阅读，请稍后重试'; publish();
+    let pending;
+    if (later) {
+      const origin = new URL(event.senderFrame.url).origin;
+      pending = { origin, token: progress.track(origin, message.id, { allowRemoved: true }) };
+      pendingCompletions.set(message.id, pending);
     }
-    if (loaded && token) pendingCompletions.set(message.id, token);
-    return { ok: Boolean(loaded && (!later || token)) };
+    const loaded = await openOriginal(message.url);
+    if (!loaded && pendingCompletions.get(message.id) === pending) pendingCompletions.delete(message.id);
+    return { ok: Boolean(loaded) };
   }
   async function command(event, message) {
     const fromShell = event.sender === shellContents && event.senderFrame === shellContents.mainFrame && event.senderFrame.url === shellURL;
@@ -385,11 +434,15 @@ function createWindow() {
     publish();
   }
   ipcMain.on('reader:navigation', navigationState);
-  function completed(event, id) {
+  async function completed(event, id) {
     if (event.sender !== reader.webContents || event.senderFrame !== reader.webContents.mainFrame || !readerURL(event.senderFrame.url)) return;
-    const token = pendingCompletions.get(id);
-    if (token && token.origin === new URL(event.senderFrame.url).origin) {
-      pendingCompletions.delete(id); progress.complete(token);
+    const pending = pendingCompletions.get(id);
+    if (pending && pending.origin === new URL(event.senderFrame.url).origin) {
+      pendingCompletions.delete(id);
+      const completedAt = progress.now(), token = await pending.token;
+      if (win.isDestroyed()) return;
+      if (token) progress.complete(token, completedAt);
+      else { state.error = '文章已移出稍后阅读，阅读进度暂未同步；请稍后同步统计'; publish(); }
     }
   }
   function progressChanged(event, message) {
@@ -415,6 +468,17 @@ function createWindow() {
     contents.on('will-navigate', event => event.preventDefault());
   }
   win.on('resize', layout);
+  let flushing = false, flushed = false;
+  win.on('close', event => {
+    if (flushed) return;
+    event.preventDefault();
+    if (flushing) return;
+    flushing = true;
+    browserSession.flushStorageData();
+    let timer;
+    Promise.race([browserSession.cookies.flushStore(), new Promise(resolve => { timer = setTimeout(resolve, 3000); })])
+      .catch(() => {}).finally(() => { clearTimeout(timer); flushed = true; if (!win.isDestroyed()) win.close(); });
+  });
   win.on('blur', () => { dragRequest++; if (dragging) { dragging = false; layout(); } shellContents.send('shell:end-drag'); });
   win.on('closed', () => {
     cubox.cancel();
@@ -439,7 +503,7 @@ function createWindow() {
   navigationContents.loadFile(navigationPath);
   layout();
   load(reader.webContents, `${READER_ORIGINS[0]}/tags/!readlater`, 'reader');
-  return { win, shellContents, navigationContents, navigation, reader, get original() { return original; }, preloaded, browserSession, progress };
+  return { win, shellContents, navigationContents, navigation, reader, get original() { return original; }, preloaded, browserSession, progress, networkProxy };
 }
 
 if (require.main === module) {

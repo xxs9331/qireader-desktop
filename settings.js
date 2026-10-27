@@ -1,4 +1,30 @@
 const $ = id => document.getElementById(id);
+let currentProxy;
+function proxyMode() {
+  const custom = $('proxy-mode').value === 'custom';
+  $('proxy-address').disabled = !custom; $('proxy-address').required = custom;
+  $('proxy-scope').disabled = !custom;
+  $('proxy-domains').disabled = !custom || $('proxy-scope').value !== 'selected';
+  $('proxy-auto').disabled = $('proxy-domains').disabled;
+  $('proxy-domains').required = !$('proxy-domains').disabled && !$('proxy-auto').checked;
+}
+function showProxy(info) {
+  currentProxy = info;
+  $('proxy-mode').value = info.mode; $('proxy-address').value = info.address;
+  $('proxy-scope').value = info.scope; $('proxy-domains').value = info.domains.join('\n');
+  $('proxy-auto').checked = info.autoLearn;
+  proxyMode(); $('save-proxy').disabled = false; $('proxy-result').textContent = info.error || '';
+}
+for (const id of ['proxy-mode', 'proxy-scope', 'proxy-auto']) $(id).addEventListener('change', proxyMode);
+$('proxy').addEventListener('submit', async event => {
+  event.preventDefault(); $('save-proxy').disabled = true; $('proxy-result').classList.remove('success');
+  const mode = $('proxy-mode').value, scope = $('proxy-scope').value;
+  const value = { mode, scope, autoLearn: $('proxy-auto').checked, address: mode === 'custom' ? $('proxy-address').value : currentProxy.address,
+    domains: mode === 'custom' && scope === 'selected' ? $('proxy-domains').value : currentProxy.domains.join('\n') };
+  const result = await request('proxy-configure', value); $('save-proxy').disabled = false;
+  if (result.ok) { showProxy(result.proxy); $('proxy-result').classList.add('success'); $('proxy-result').textContent = '代理已应用，页面正在重新加载；原登录信息保留。'; }
+  else $('proxy-result').textContent = result.error;
+});
 let currentGoals;
 function goalMode(period) { $(`${period}-target`).disabled = $(`${period}-auto`).checked; }
 function showGoals(goals) {
@@ -55,5 +81,5 @@ $('clear').addEventListener('click', async () => {
   else { $('result').classList.remove('success'); $('result').textContent = result.error; }
 });
 request('settings-info').then(result => {
-  if (result.ok) { show(result.info); showGoals(result.goals); } else $('result').textContent = result.error;
+  if (result.ok) { show(result.info); showGoals(result.goals); showProxy(result.proxy); } else $('result').textContent = result.error;
 });

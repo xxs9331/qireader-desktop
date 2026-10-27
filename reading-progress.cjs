@@ -186,20 +186,21 @@ class ReadingProgress {
     } catch (error) { this.fail(error); }
     finally { this.loading = false; this.onChange(); }
   }
-  async track(origin, id) {
+  async track(origin, id, { allowRemoved = false } = {}) {
+    const startedAt = this.now();
     try {
       const context = await this.context(origin);
       let entry = this.data.accounts[context.key]?.entries.find(entry => entry.id === id);
       if (!entry) {
         entry = await this.get(origin, `/api/entry/${encodeURIComponent(id)}`, { entryId: id, streamId: `tag-${context.tag}` });
-        if (!validEntry(entry) || entry.id !== id || !Array.isArray(entry.tagIds) || !entry.tagIds.includes(context.tag)) {
+        if (!validEntry(entry) || entry.id !== id || !Array.isArray(entry.tagIds) || (!allowRemoved && !entry.tagIds.includes(context.tag))) {
           throw new Error('未能记录这篇稍后阅读文章');
         }
       }
       if (await this.user(origin) !== context.user) { this.active = null; throw new Error('账号已切换，请重新选择文章'); }
       const record = { id, crawledAt: entry.crawledAt, done: false };
       this.record(context.key, record);
-      return { key: context.key, origin, id, startedAt: this.now() };
+      return { key: context.key, origin, id, startedAt };
     } catch (error) { this.fail(error); return null; }
   }
   async reconcile(origin, id) {
@@ -219,10 +220,10 @@ class ReadingProgress {
     this.save(key, [...entries, entry]);
     this.changes.set(`${key}|${entry.id}`, { key, entry, revision: ++this.revision });
   }
-  complete(token) {
+  complete(token, confirmedAt = this.now()) {
     const entry = this.data.accounts[token.key]?.entries.find(entry => entry.id === token.id);
     if (!entry) return;
-    const completedAt = entry.completedAt >= token.startedAt ? entry.completedAt : this.now();
+    const completedAt = entry.completedAt >= token.startedAt ? entry.completedAt : confirmedAt;
     try { this.record(token.key, { ...entry, done: true, completedAt }); }
     catch (error) { this.fail(error); }
   }
