@@ -4,7 +4,8 @@ body { margin: 0; overflow: hidden; }
 header { height: 44px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px; padding: 5px 10px; border-bottom: 1px solid #ececec; white-space: nowrap; }
 .toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 6px; }
 .toolbar-right { justify-content: flex-end; }
-.toolbar-center { width: min(400px, calc(100vw - 580px)); min-width: 0; text-align: center; }
+.toolbar-center { width: min(400px, calc(100vw - 740px)); min-width: 0; text-align: center; }
+#cubox-save { min-width: 76px; }
 .progress-line { display: flex; align-items: center; justify-content: center; gap: 2px; height: 28px; }
 .progress-line button { padding: 3px 5px; }
 #progress-period { color: #70518f; flex-shrink: 0; }

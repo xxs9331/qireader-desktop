@@ -17,7 +17,11 @@ if (process.isMainFrame && ['https://www.qireader.com', 'https://www.qireader.co
         const ids = new Set(queue.map(item => item.id));
         for (const item of renderedItems()) if (!ids.has(item.id)) { queue.push(item); ids.add(item.id); }
       }
-      const state = { previous: sameList && !opening && cursor > 0, next: sameList && !opening && cursor >= 0 && cursor + 1 < queue.length };
+      const state = {
+        previous: sameList && !opening && cursor > 0, next: sameList && !opening && cursor >= 0 && cursor + 1 < queue.length,
+        route: location.pathname, current: sameList ? queue[cursor]?.url : null,
+        upcoming: sameList && cursor >= 0 ? queue.slice(cursor + 1, cursor + 3).map(item => item.url) : []
+      };
       const serialized = JSON.stringify(state);
       if (serialized !== lastNavigation) { lastNavigation = serialized; ipcRenderer.send('reader:navigation', state); }
     }
@@ -110,11 +114,13 @@ if (process.isMainFrame && ['https://www.qireader.com', 'https://www.qireader.co
     document.head.append(style);
     new PerformanceObserver(list => {
       if (opening) return;
-      if (list.getEntries().some(entry => {
+      for (const entry of list.getEntries()) {
         const url = new URL(entry.name);
-        return url.origin === location.origin && entry.responseStatus >= 200 && entry.responseStatus < 300 &&
-          (/^\/api\/entries\/.*\/tags\//.test(url.pathname) || url.pathname === '/api/session');
-      })) ipcRenderer.send('reader:progress-changed');
+        if (url.origin !== location.origin || entry.responseStatus < 200 || entry.responseStatus >= 300) continue;
+        const change = url.pathname.match(/^\/api\/entries\/[^/]+\/([^/]+)\/tags\//);
+        if (change) ipcRenderer.send('reader:progress-changed', { id: decodeURIComponent(change[1]) });
+        else if (url.pathname === '/api/session') ipcRenderer.send('reader:progress-changed', { session: true });
+      }
     }).observe({ type: 'resource' });
     let last = '';
     let timer;

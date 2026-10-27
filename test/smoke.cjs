@@ -1,4 +1,4 @@
-const { app, session, ipcMain, desktopCapturer } = require('electron');
+const { app, session, ipcMain, desktopCapturer, BrowserWindow } = require('electron');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -44,11 +44,14 @@ window.selectArticle = (id, delay = 0) => {
   await app.whenReady();
   const browserSession = session.fromPartition('persist:qireader-desktop');
   const confirmedRemovals = [];
+  const originalRequests = new Map();
+  let releaseThird;
+  const thirdResponse = new Promise(resolve => { releaseThird = resolve; });
   const capturedToday = new Date(); capturedToday.setHours(0, 0, 0, 0);
   const statsEntries = ['a', 'b', 'c', 'success', 'success-two', 'reject', 'network-fail', 'not-found', 'recycled'].map(id =>
     ({ id, crawledAt: +capturedToday + 1000, timestamp: '9007199254740993999', tagIds: ['later'], status: 1 }));
   statsEntries.push({ id: 'older', crawledAt: +capturedToday - 86400000, timestamp: '9007199254740993998', tagIds: ['later'], status: 1 });
-  let statsStatus = 200;
+  let statsStatus = 200, streamRequests = 0;
   await browserSession.protocol.handle('https', async request => {
     const url = new URL(request.url);
     if (request.method === 'DELETE') {
@@ -59,6 +62,7 @@ window.selectArticle = (id, delay = 0) => {
       return new Response('{}', {status:200});
     }
     if (url.hostname === 'www.qireader.com' && url.pathname.startsWith('/api/')) {
+      if (url.pathname.startsWith('/api/streams/')) streamRequests++;
       if (statsStatus !== 200) return Response.json({}, { status: statsStatus });
       let result;
       if (url.pathname === '/api/session/user') result = { id: 'smoke-account' };
@@ -72,34 +76,93 @@ window.selectArticle = (id, delay = 0) => {
       return Response.json({ result });
     }
     if (url.hostname === 'www.qireader.com') return new Response(readerHTML, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+    originalRequests.set(url.pathname, (originalRequests.get(url.pathname) || 0) + 1);
+    if (url.pathname === '/question/pre-three') await thirdResponse;
     if (url.pathname === '/failure' || url.pathname === '/question/network-fail') return Response.error();
-    if (url.pathname === '/question/not-found') return new Response('Not found', {status:404});
+    if (['/question/not-found','/question/pre-fail'].includes(url.pathname)) return new Response('Not found', {status:404});
     if (url.pathname === '/question/recycled') await pause(400);
     return new Response(`<!doctype html><meta charset="utf-8"><title>原文测试</title><style>body{font:20px sans-serif;padding:40px;line-height:1.8}</style><h1>原文 ${url.pathname}</h1><p>独立网页视图 · 模拟知乎原文</p><textarea placeholder="评论输入框"></textarea>`, { headers: { 'content-type': 'text/html; charset=utf-8' } });
   });
-  const { win, shellContents, navigationContents, navigation, reader, original } = createWindow();
+  const desktop = createWindow();
+  let clock = +capturedToday + 12 * 3600000;
+  desktop.progress.now = () => clock;
+  const { win, shellContents, navigationContents, navigation, reader, preloaded } = desktop;
   const rc = reader.webContents;
-  const oc = original.webContents;
+  const oc = () => desktop.original.webContents;
+  async function restoreTestWindow() {
+    win.restore(); win.show(); win.setSize(1500, 960); win.focus();
+    await until(() => win.getContentSize().every(size => size > 0), 'Test window did not restore');
+    await until(() => shellContents.executeJavaScript('innerWidth').then(width => width === win.getContentSize()[0]), 'Toolbar viewport did not follow the restored window');
+  }
+  async function openTestSettings() {
+    await shellContents.executeJavaScript('document.getElementById("settings").click()');
+    await until(() => BrowserWindow.getAllWindows().some(window => window.webContents.getURL().endsWith('/settings.html')), 'Unified settings did not open');
+    const settings = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/settings.html'));
+    await until(() => settings.webContents.executeJavaScript('Boolean(window.desktop) && document.getElementById("today-target").value !== ""'), 'Unified settings did not initialize');
+    return settings;
+  }
   await until(() => !rc.isLoading() && rc.getURL().includes('qireader.com'), 'QiReader fixture failed to load');
   await until(() => shellContents.executeJavaScript('Boolean(window.desktop)'), 'Shell preload missing');
   await until(() => navigationContents.executeJavaScript('Boolean(window.desktop)'), 'Floating navigation preload missing');
   assert.equal(navigation.getVisible(), false);
 
   if (process.env.QIREADER_TEST_PHASE === 'restart') {
-    await until(() => shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("已完成 2 / 9")'), 'Reading progress lost across restart');
+    if (process.platform === 'win32') {
+      const settings = await openTestSettings();
+      const result = await settings.webContents.executeJavaScript('desktop.request("settings-info")');
+      assert.equal(result.info.configured, true);
+      assert.ok(!JSON.stringify(result).includes('fake_secret'));
+      assert.equal((await settings.webContents.executeJavaScript('desktop.request("cubox-clear")')).ok, true);
+      settings.close();
+      console.log('PASS: Windows encrypted Cubox configuration survives restart and clears locally');
+    }
+    await until(() => shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("已完成 2 / 2") && document.getElementById("progress-count").textContent.includes("已达标")'), 'Daily target or completion dates lost across restart');
+    assert.equal(desktop.progress.summary('week').automatic, true);
+    assert.equal(desktop.progress.summary('week').target, 7);
     assert.equal(await rc.executeJavaScript('localStorage.getItem("test-login")'), 'retained');
     const cookies = await browserSession.cookies.get({ url: 'https://www.zhihu.com', name: 'test-session' });
     assert.equal(cookies[0]?.value, 'retained');
+    assert.equal(streamRequests, 0, 'Restart must reuse the daily snapshot without scanning');
     console.log('PASS: login storage and persistent cookies survive process restart');
     win.destroy();
     app.quit();
     return;
   }
 
-  await until(() => shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("已完成 0 / 9")'), 'Initial saved-article progress missing');
-  assert.equal(await shellContents.executeJavaScript('document.getElementById("progress-older").textContent'), '往期 1');
+  await until(() => shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("已完成 0 / 100")'), 'Default daily goal missing');
+  assert.equal(await shellContents.executeJavaScript('document.querySelectorAll("#settings").length === 1 && !document.getElementById("progress-goal") && !document.getElementById("goal-editor")'), true);
+  let goalSettings = await openTestSettings();
+  assert.equal(await goalSettings.webContents.executeJavaScript('Boolean(document.getElementById("goals") && document.getElementById("api-link"))'), true);
+  async function editGoal(period, automatic, target) {
+    await goalSettings.webContents.executeJavaScript(`document.getElementById('${period}-auto').checked=${automatic};document.getElementById('${period}-auto').dispatchEvent(new Event('change'));document.getElementById('${period}-target').value=${target};document.getElementById('goals').requestSubmit()`);
+    await until(() => desktop.progress.summary(period).automatic === automatic && desktop.progress.summary(period).target === target, 'Goal did not save');
+    await until(() => goalSettings.webContents.executeJavaScript('document.getElementById("goals-result").textContent.includes("已保存") && !document.getElementById("save-goals").disabled'), 'Goal save result missing');
+  }
+  await editGoal('today', true, 100);
+  await until(() => shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("0 / 9")'), 'Automatic daily cohort missing');
+  await editGoal('today', false, 2);
+  await until(() => shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("0 / 2")'), 'Manual daily goal missing');
+  await goalSettings.webContents.executeJavaScript(`document.getElementById('today-target').value=999`);
+  goalSettings.close(); goalSettings = await openTestSettings();
+  assert.equal(await goalSettings.webContents.executeJavaScript('document.getElementById("today-target").value'), '2');
+  assert.equal(desktop.progress.summary().total, 2);
+  assert.equal((await navigationContents.executeJavaScript('desktop.request("goals-configure", {today:{automatic:false,target:999}})')).ok, false);
+  assert.equal(desktop.progress.summary().total, 2);
   await shellContents.executeJavaScript('document.getElementById("progress-period").click()');
   await until(() => shellContents.executeJavaScript('document.getElementById("progress-period").textContent === "本周"'), 'Week switch missing');
+  const automaticWeekTotal = desktop.progress.summary('week').total;
+  await editGoal('week', false, 7);
+  await until(() => shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("0 / 7")'), 'Manual weekly goal missing');
+  await editGoal('week', true, 7);
+  assert.equal(desktop.progress.summary('week').total, automaticWeekTotal);
+  assert.equal(desktop.progress.summary('week').automatic, true);
+  assert.equal(streamRequests, 1, 'Goal edits must not request QiReader lists');
+  const settingsArtifact = path.join(__dirname, '..', 'artifacts', `settings-${process.platform}.png`);
+  fs.mkdirSync(path.dirname(settingsArtifact), { recursive: true });
+  await pause(100);
+  try { fs.writeFileSync(settingsArtifact, (await goalSettings.webContents.capturePage()).toPNG()); }
+  catch (error) { console.log(`SKIP: optional settings screenshot unavailable (${error.message})`); }
+  goalSettings.close();
   await shellContents.executeJavaScript('document.getElementById("progress-period").click()');
   await until(() => shellContents.executeJavaScript('document.getElementById("progress-period").textContent === "全部" && document.getElementById("progress-count").textContent.includes("0 / 10")'), 'All progress missing');
   assert.equal(await shellContents.executeJavaScript('document.getElementById("reading-progress").max'), 10);
@@ -115,20 +178,26 @@ window.selectArticle = (id, delay = 0) => {
     return Math.abs(center.left+center.width/2-innerWidth/2)<1 && left.right<=center.left && center.right<=right.left && document.querySelector('header').offsetHeight===44;
   })()`), true);
   win.setSize(1500, 960);
+  const beforeFocus = streamRequests;
+  for (let i = 0; i < 20; i++) win.emit('focus');
+  await shellContents.executeJavaScript('desktop.command("progress-refresh")');
+  await until(() => !desktop.progress.syncing && desktop.progress.error.includes('冷却'), 'Manual cooldown did not settle');
+  assert.equal(streamRequests, beforeFocus, 'Focus or rapid manual refresh scanned the stream');
+  clock += 31 * 60000;
   statsStatus = 503;
   await shellContents.executeJavaScript('document.getElementById("progress-count").click()');
   await until(() => shellContents.executeJavaScript('document.getElementById("reading-status").classList.contains("stale")'), 'Failed sync did not show stale state');
-  assert.equal(await shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("0 / 9")'), true);
+  assert.equal(await shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("0 / 2")'), true);
   statsStatus = 200;
   await shellContents.executeJavaScript('desktop.command("progress-refresh")');
   await until(() => shellContents.executeJavaScript('!document.getElementById("reading-status").classList.contains("stale") && !document.getElementById("progress-count").disabled'), 'Progress retry failed');
-  console.log('PASS: today/week stats, narrow-window centering, failed sync preserves counts and retry recovers');
+  console.log('PASS: today/week stats, centering, focus/manual request throttling, failed sync preserves counts and retry recovers');
 
   await rc.executeJavaScript(`history.replaceState({},'', '/tags/reading')`);
   assert.equal(await rc.executeJavaScript('typeof require + "/" + typeof desktop + "/" + typeof process'), 'undefined/undefined/undefined');
   await rc.executeJavaScript(`document.querySelector('[data-is-entry-title]').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0}));document.querySelector('[data-is-entry-title]').click()`);
-  await until(() => oc.getURL().endsWith('/question/a') && !oc.isLoading(), 'List title did not open original');
-  assert.ok(original.getBounds().x > 0);
+  await until(() => oc().getURL().endsWith('/question/a') && !oc().isLoading(), 'List title did not open original');
+  assert.ok(desktop.original.getBounds().x > 0);
   assert.equal(reader.getBounds().x, 0);
   assert.equal(navigation.getVisible(), false);
   assert.ok(rc.getURL().endsWith('/tags/reading'));
@@ -138,59 +207,109 @@ window.selectArticle = (id, delay = 0) => {
   assert.equal(await rc.executeJavaScript('window.actionClicked'), true);
   await until(() => navigationContents.executeJavaScript('!document.getElementById("next").disabled'), 'Next button unavailable');
   await navigationContents.executeJavaScript('document.getElementById("next").click()');
-  await until(() => oc.getURL().endsWith('/question/b') && !oc.isLoading(), 'Next button did not open next article');
+  await until(() => oc().getURL().endsWith('/question/b') && !oc().isLoading(), 'Next button did not open next article');
   assert.equal(reader.getBounds().x, 0);
   await until(() => navigationContents.executeJavaScript('!document.getElementById("previous").disabled && document.getElementById("next").disabled'), 'Navigation boundary incorrect');
   await navigationContents.executeJavaScript('document.getElementById("previous").click()');
-  await until(() => oc.getURL().endsWith('/question/a') && !oc.isLoading(), 'Previous button did not open previous article');
+  await until(() => oc().getURL().endsWith('/question/a') && !oc().isLoading(), 'Previous button did not open previous article');
   await until(() => navigationContents.executeJavaScript('!document.getElementById("next").disabled'), 'Next did not recover');
   await shellContents.executeJavaScript('desktop.command("toggle-list")');
   await navigationContents.executeJavaScript('document.getElementById("next").click()');
-  await until(() => oc.getURL().endsWith('/question/b') && !oc.isLoading(), 'Next while hidden failed');
+  await until(() => oc().getURL().endsWith('/question/b') && !oc().isLoading(), 'Next while hidden failed');
   assert.ok(reader.getBounds().x < 0);
   assert.equal(navigation.getVisible(), true);
-  assert.equal(original.getBounds().width, win.getContentSize()[0]);
+  assert.equal(desktop.original.getBounds().width, win.getContentSize()[0]);
   await rc.executeJavaScript('addRow("c")');
   await until(() => navigationContents.executeJavaScript('!document.getElementById("next").disabled'), 'Newly rendered article not appended');
   await navigationContents.executeJavaScript('document.getElementById("next").click()');
-  await until(() => oc.getURL().endsWith('/question/c') && !oc.isLoading(), 'Next did not reach appended article');
+  await until(() => oc().getURL().endsWith('/question/c') && !oc().isLoading(), 'Next did not reach appended article');
   assert.ok(reader.getBounds().x < 0);
   await until(() => navigationContents.executeJavaScript('!document.getElementById("previous").disabled'), 'Previous unavailable after append');
   await shellContents.executeJavaScript('desktop.command("toggle-list")');
   await navigationContents.executeJavaScript('document.getElementById("previous").click()');
-  await until(() => oc.getURL().endsWith('/question/b') && !oc.isLoading(), 'Previous after append failed');
+  await until(() => oc().getURL().endsWith('/question/b') && !oc().isLoading(), 'Previous after append failed');
   assert.equal(navigation.getVisible(), false);
   await until(() => navigationContents.executeJavaScript('!document.getElementById("next").disabled'), 'Navigation did not settle');
   console.log('PASS: previous/next buttons, newly rendered rows, visible/hidden list state preserved');
   await rc.executeJavaScript(`document.querySelector('[data-is-entry="b"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))`);
-  await until(() => oc.getURL().endsWith('/question/b') && !oc.isLoading(), 'Keyboard list selection failed');
+  await until(() => oc().getURL().endsWith('/question/b') && !oc().isLoading(), 'Keyboard list selection failed');
   assert.ok(rc.getURL().endsWith('/tags/reading'));
   assert.deepEqual(await rc.executeJavaScript('window.removeCalls'), []);
   console.log('PASS: title and keyboard selection retain the list; native tap blocked; row action preserved');
+
+  await rc.executeJavaScript(`['pre-one','pre-two','pre-three','pre-four','pre-fail'].forEach(addRow);document.querySelector('[data-is-entry="pre-one"] a').click()`);
+  const warmURL = id => `https://www.zhihu.com/question/${id}`;
+  await until(() => preloaded.get(warmURL('pre-two'))?.ready && preloaded.has(warmURL('pre-three')), 'Two following articles were not preloaded');
+  assert.deepEqual([...preloaded.keys()], [warmURL('pre-two'), warmURL('pre-three')]);
+  assert.equal(originalRequests.get('/question/pre-four') || 0, 0);
+  const warmSecond = preloaded.get(warmURL('pre-two')).view.webContents;
+  const warmThird = preloaded.get(warmURL('pre-three')).view.webContents;
+  assert.equal(warmSecond.isAudioMuted(), true);
+  assert.equal(await warmSecond.executeJavaScript('typeof require + "/" + typeof desktop'), 'undefined/undefined');
+  const popupCount = BrowserWindow.getAllWindows().length;
+  await warmSecond.executeJavaScript('void window.open("about:blank", "background-login")');
+  await pause(100);
+  assert.equal(BrowserWindow.getAllWindows().length, popupCount);
+  await warmSecond.executeJavaScript('window.preloadedMarker = 42');
+  ipcMain.emit('reader:navigation', { sender: warmSecond, senderFrame: warmSecond.mainFrame }, { route: '/tags/reading', current: warmURL('pre-one'), upcoming: ['file:///etc/passwd'] });
+  assert.equal(preloaded.size, 2);
+  const secondRequests = originalRequests.get('/question/pre-two');
+  await until(() => navigationContents.executeJavaScript('!document.getElementById("next").disabled'), 'Preloaded next unavailable');
+  await navigationContents.executeJavaScript('document.getElementById("next").click()');
+  await until(() => oc() === warmSecond && !oc().isLoading(), 'Ready page was not promoted');
+  assert.equal(await oc().executeJavaScript('window.preloadedMarker'), 42);
+  assert.equal(originalRequests.get('/question/pre-two'), secondRequests);
+  assert.equal(oc().isAudioMuted(), false);
+  await until(() => preloaded.has(warmURL('pre-four')), 'Prefetch window did not advance');
+  assert.equal(originalRequests.get('/question/pre-fail') || 0, 0);
+  await until(() => navigationContents.executeJavaScript('!document.getElementById("next").disabled'), 'In-flight next unavailable');
+  await navigationContents.executeJavaScript('document.getElementById("next").click()');
+  await until(() => oc() === warmThird, 'In-flight preload was not reused');
+  releaseThird();
+  await until(() => !oc().isLoading() && preloaded.get(warmURL('pre-fail'))?.failed, 'Preload completion or background failure missing');
+  assert.equal(originalRequests.get('/question/pre-three'), 1);
+  assert.equal(preloaded.size, 2);
+  assert.equal(await shellContents.executeJavaScript('document.getElementById("error").hidden'), true);
+  assert.deepEqual(confirmedRemovals, []);
+  assert.equal(await shellContents.executeJavaScript('document.getElementById("reading-progress").value'), 0);
+  const failedPage = preloaded.get(warmURL('pre-fail')).view.webContents;
+  await until(() => navigationContents.executeJavaScript('!document.getElementById("next").disabled'), 'Foreground failure test not ready');
+  await rc.executeJavaScript(`document.querySelector('[data-is-entry="pre-fail"] a').click()`);
+  await until(() => shellContents.executeJavaScript('document.getElementById("error").textContent.includes("HTTP 404")'), 'Failed preload was not retried in foreground');
+  assert.equal(originalRequests.get('/question/pre-fail'), 2);
+  assert.equal(failedPage.isDestroyed(), true);
+  await rc.executeJavaScript(`document.querySelector('[data-is-entry="pre-one"] a').click()`);
+  await until(() => preloaded.size === 2 && [...preloaded.values()].every(page => page.ready), 'Preload recovery failed');
+  const stalePages = [...preloaded.values()].map(page => page.view.webContents);
+  await rc.executeJavaScript(`history.pushState({},'', '/tags/other')`);
+  await until(() => preloaded.size === 0 && stalePages.every(contents => contents.isDestroyed()), 'Changed list retained old preloads');
+  await rc.executeJavaScript(`history.pushState({},'', '/tags/reading');document.querySelectorAll('[data-is-entry^="pre-"]').forEach(row=>row.remove())`);
+  console.log('PASS: two-page bound, ready/in-flight reuse without reload, muted sandboxed background, silent failure retry, stale-list cleanup; no early completion');
+
   await rc.executeJavaScript('selectArticle("a")');
-  await until(() => oc.getURL().endsWith('/question/a') && !oc.isLoading(), 'First article did not open');
-  assert.equal(await oc.executeJavaScript('typeof require + "/" + typeof desktop'), 'undefined/undefined');
+  await until(() => oc().getURL().endsWith('/question/a') && !oc().isLoading(), 'First article did not open');
+  assert.equal(await oc().executeJavaScript('typeof require + "/" + typeof desktop'), 'undefined/undefined');
   console.log('PASS: first article opens; remote pages have no Node or shell bridge');
 
   const visited = [];
-  oc.on('did-navigate', (_event, url) => visited.push(url));
+  oc().on('did-navigate', (_event, url) => visited.push(url));
   await rc.executeJavaScript('selectArticle("b", 700)');
   await pause(450);
-  assert.ok(oc.getURL().endsWith('/question/a'));
-  await until(() => oc.getURL().endsWith('/question/b') && !oc.isLoading(), 'Delayed SPA article did not open');
+  assert.ok(oc().getURL().endsWith('/question/a'));
+  await until(() => oc().getURL().endsWith('/question/b') && !oc().isLoading(), 'Delayed SPA article did not open');
   assert.deepEqual(visited, ['https://www.zhihu.com/question/b']);
   assert.ok(rc.getURL().endsWith('/entries/b'));
   console.log('PASS: delayed SPA rendering opens the correct article without navigating the list');
 
-  ipcMain.emit('reader:article', { sender: oc, senderFrame: oc.mainFrame }, { route: '/tags/!readlater/entries/b', url: 'https://evil.test/' });
+  ipcMain.emit('reader:article', { sender: oc(), senderFrame: oc().mainFrame }, { route: '/tags/!readlater/entries/b', url: 'https://evil.test/' });
   ipcMain.emit('reader:article', { sender: rc, senderFrame: rc.mainFrame }, { route: '/tags/!readlater/entries/old', url: 'https://evil.test/' });
   ipcMain.emit('reader:article', { sender: rc, senderFrame: rc.mainFrame }, { route: '/tags/!readlater/entries/b', url: 'file:///etc/passwd' });
   await pause(150);
-  assert.ok(oc.getURL().endsWith('/question/b'));
+  assert.ok(oc().getURL().endsWith('/question/b'));
   console.log('PASS: wrong sender, stale route, and non-web URLs are rejected');
 
   await shellContents.executeJavaScript('desktop.command("zoom", {pane:"original",change:10})');
-  await until(() => Math.round(oc.getZoomFactor() * 100) === 110, 'Original zoom button failed');
+  await until(() => Math.round(oc().getZoomFactor() * 100) === 110, 'Original zoom button failed');
   assert.equal(Math.round(rc.getZoomFactor() * 100), 100);
   rc.sendInputEvent({ type: 'keyDown', keyCode: '=', modifiers: ['control'] });
   await until(() => Math.round(rc.getZoomFactor() * 100) === 110, 'Reader keyboard zoom failed');
@@ -201,20 +320,22 @@ window.selectArticle = (id, delay = 0) => {
 
   await shellContents.executeJavaScript('desktop.command("width", 180)');
   await pause(100);
-  assert.ok(reader.getBounds().width < original.getBounds().width);
+  assert.ok(reader.getBounds().width < desktop.original.getBounds().width);
   assert.equal(reader.getBounds().width, 180);
   await shellContents.executeJavaScript('desktop.command("toggle-list")');
   await pause(100);
-  assert.equal(original.getBounds().width, win.getContentSize()[0]);
-  assert.equal(original.getBounds().x, 0);
+  assert.equal(desktop.original.getBounds().width, win.getContentSize()[0]);
+  assert.equal(desktop.original.getBounds().x, 0);
   await shellContents.executeJavaScript('desktop.command("toggle-list"); desktop.command("width", 280)');
   await pause(100);
-  win.focus();
+  await restoreTestWindow();
+  shellContents.focus();
   shellContents.sendInputEvent({type:'mouseDown',x:283,y:220,button:'left',clickCount:1});
   await until(() => shellContents.executeJavaScript('document.body.classList.contains("previewing")'), 'Drag preview did not start');
   shellContents.sendInputEvent({type:'mouseMove',x:203,y:220,modifiers:['leftButtonDown']});
   await until(() => reader.getBounds().width === 200, 'Mouse move did not resize list');
   shellContents.sendInputEvent({type:'mouseUp',x:203,y:220,button:'left',clickCount:1});
+  shellContents.sendInputEvent({type:'mouseMove',x:20,y:20,modifiers:[]});
   await until(() => reader.getBounds().width === 200, 'Mouse drag did not resize list');
   await until(() => shellContents.executeJavaScript('!document.body.classList.contains("previewing")'), 'Drag did not release');
   console.log('PASS: 180px list, full-width collapse, real pointer drag with preview');
@@ -228,58 +349,70 @@ window.selectArticle = (id, delay = 0) => {
   assert.equal(reader.getBounds().x,0); // Floating page can only send navigation actions.
   await shellContents.executeJavaScript('document.getElementById("list-side").click()');
   await until(() => reader.getBounds().x === win.getContentSize()[0] - 200, 'List did not move right');
-  assert.equal(original.getBounds().x,0);
+  assert.equal(desktop.original.getBounds().x,0);
   const startRight = win.getContentSize()[0] - 203;
+  try {
+    await until(() => shellContents.executeJavaScript(`Math.abs(document.getElementById('splitter').getBoundingClientRect().x - ${startRight - 3}) < 1`), 'Right splitter did not finish layout');
+  } catch (error) {
+    console.error('Right splitter diagnostic', reader.getBounds(), win.getContentSize(), shellContents.getZoomFactor(), await shellContents.executeJavaScript(`({innerWidth,body:document.body.className,box:document.getElementById('splitter').getBoundingClientRect().toJSON(),width:getComputedStyle(document.documentElement).getPropertyValue('--list-width')})`));
+    throw error;
+  }
+  shellContents.focus();
   shellContents.sendInputEvent({type:'mouseDown',x:startRight,y:220,button:'left',clickCount:1});
   await until(() => shellContents.executeJavaScript('document.body.classList.contains("previewing")'), 'Right drag preview missing');
   shellContents.sendInputEvent({type:'mouseMove',x:startRight-80,y:220,modifiers:['leftButtonDown']});
   await until(() => reader.getBounds().width === 280, 'Right list drag direction incorrect');
   shellContents.sendInputEvent({type:'mouseUp',x:startRight-80,y:220,button:'left',clickCount:1});
+  shellContents.sendInputEvent({type:'mouseMove',x:20,y:20,modifiers:[]});
   await until(() => shellContents.executeJavaScript('!document.body.classList.contains("previewing")'), 'Right drag did not release');
   await shellContents.executeJavaScript('desktop.command("toggle-list")');
   await until(() => reader.getBounds().x === win.getContentSize()[0], 'Right list did not hide');
   assert.equal(navigation.getVisible(), true);
-  assert.equal(original.getBounds().width,win.getContentSize()[0]);
+  assert.equal(desktop.original.getBounds().width,win.getContentSize()[0]);
   await shellContents.executeJavaScript('document.getElementById("list-side").click()');
   await until(() => reader.getBounds().x < 0, 'Hidden list side switch unexpectedly expanded list');
   assert.equal(navigation.getVisible(), true);
-  assert.equal(original.getBounds().width,win.getContentSize()[0]);
+  assert.equal(desktop.original.getBounds().width,win.getContentSize()[0]);
   await shellContents.executeJavaScript('desktop.command("toggle-list")');
   await until(() => reader.getBounds().x === 0, 'Left list did not restore');
   assert.equal(navigation.getVisible(), false);
   console.log('PASS: floating navigation bounds and IPC scope, no home button, left/right drag and manual visibility');
 
-  const created = new Promise(resolve => oc.once('did-create-window', resolve));
-  await oc.executeJavaScript('void window.open("https://www.zhihu.com/signin", "login")');
+  const created = new Promise(resolve => oc().once('did-create-window', resolve));
+  await oc().executeJavaScript('void window.open("https://www.zhihu.com/signin", "login")');
   const popup = await created;
   await until(() => !popup.webContents.isLoading(), 'Popup did not load');
   assert.equal(popup.webContents.session, browserSession);
   assert.equal(await popup.webContents.executeJavaScript('typeof require + "/" + typeof desktop'), 'undefined/undefined');
   popup.close();
-  const blankCreated = new Promise(resolve => oc.once('did-create-window', resolve));
-  await oc.executeJavaScript('void window.open("about:blank", "oauth")');
+  const blankCreated = new Promise(resolve => oc().once('did-create-window', resolve));
+  await oc().executeJavaScript('void window.open("about:blank", "oauth")');
   const blank = await blankCreated;
   await blank.webContents.loadURL('https://www.zhihu.com/signin');
   assert.equal(await blank.webContents.executeJavaScript('typeof require + "/" + typeof desktop'), 'undefined/undefined');
   blank.close();
   console.log('PASS: sandboxed login popups');
 
-  await oc.loadURL('https://www.zhihu.com/failure').catch(() => {});
+  await oc().loadURL('https://www.zhihu.com/failure').catch(() => {});
   await until(() => shellContents.executeJavaScript('document.getElementById("error").textContent.includes("加载失败")'), 'Failure not visible');
   await rc.executeJavaScript('selectArticle("a")');
-  await until(() => oc.getURL().endsWith('/question/a') && !oc.isLoading(), 'Next article did not recover after network failure');
+  await until(() => oc().getURL().endsWith('/question/a') && !oc().isLoading(), 'Next article did not recover after network failure');
   console.log('PASS: failed loads are visible and subsequent articles recover');
 
   await rc.executeJavaScript(`history.pushState({},'', '/tags/!readlater');document.querySelector('[data-focus-container="articleView"]').replaceChildren();const first=addRow('success');addRow('success-two');first.querySelector('a').click()`);
   await until(() => confirmedRemovals.includes('success'), 'Successful original was not removed through native action');
+  await until(() => preloaded.get('https://www.zhihu.com/question/success-two')?.ready, 'Read Later next page was not prefetched');
+  assert.equal(confirmedRemovals.includes('success-two'), false);
+  const laterPreload = preloaded.get('https://www.zhihu.com/question/success-two').view.webContents;
   assert.equal(await rc.executeJavaScript(`document.querySelector('[data-is-entry="success"]')===null`), true);
   assert.ok(rc.getURL().endsWith('/tags/!readlater'));
   await until(() => navigationContents.executeJavaScript('!document.getElementById("next").disabled'), 'Next after removal unavailable');
   await navigationContents.executeJavaScript('document.getElementById("next").click()');
   await until(() => confirmedRemovals.includes('success-two'), 'Next did not remove successful next article');
+  assert.equal(oc(), laterPreload);
   await until(() => navigationContents.executeJavaScript('!document.getElementById("previous").disabled'), 'Previous after removal unavailable');
   await navigationContents.executeJavaScript('document.getElementById("previous").click()');
-  await until(() => oc.getURL().endsWith('/question/success') && !oc.isLoading(), 'Removed previous article could not be revisited');
+  await until(() => oc().getURL().endsWith('/question/success') && !oc().isLoading(), 'Removed previous article could not be revisited');
   await until(() => navigationContents.executeJavaScript('!document.getElementById("next").disabled'), 'Previous replay did not settle');
   assert.equal(await rc.executeJavaScript('window.removeCalls.filter(id=>id==="success").length'),1);
   await rc.executeJavaScript(`addRow('reject').querySelector('a').click()`);
@@ -292,9 +425,10 @@ window.selectArticle = (id, delay = 0) => {
     assert.equal(await rc.executeJavaScript(`window.removeCalls.includes(${JSON.stringify(id)})`), false);
   }
   assert.deepEqual(confirmedRemovals, ['success','success-two']);
-  await until(() => shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("已完成 2 / 9")'), 'Successful removal did not update progress');
-  ipcMain.emit('reader:completed', { sender: oc, senderFrame: oc.mainFrame }, 'reject');
+  await until(() => shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("已完成 2 / 2") && document.getElementById("progress-count").textContent.includes("已达标")'), 'Confirmed removals did not reach the daily goal');
+  ipcMain.emit('reader:completed', { sender: oc(), senderFrame: oc().mainFrame }, 'reject');
   assert.equal(await shellContents.executeJavaScript('document.getElementById("reading-progress").value'), 2);
+  assert.equal(streamRequests, 2, 'Article changes, popups and reloads must not add full scans');
   await rc.executeJavaScript(`const recycled=addRow('recycled');recycled.querySelector('a').click();recycled.setAttribute('data-is-entry','different-item')`);
   await until(() => shellContents.executeJavaScript('document.getElementById("error").textContent.includes("已离开视图")'), 'Recycled row not detected');
   assert.equal(await rc.executeJavaScript('window.removeCalls.includes("different-item")'),false);
@@ -307,33 +441,79 @@ window.selectArticle = (id, delay = 0) => {
   const artifactDir = path.join(__dirname, '..', 'artifacts');
   fs.mkdirSync(artifactDir, { recursive: true });
   await rc.executeJavaScript(`history.pushState({},'', '/tags/reading');document.querySelector('[data-focus-container="articleView"]').replaceChildren();document.querySelector('[data-is-entry-title]').click()`);
-  await until(() => oc.getURL().endsWith('/question/a') && !oc.isLoading(), 'List did not remain usable after returning from article mode');
+  await until(() => oc().getURL().endsWith('/question/a') && !oc().isLoading(), 'List did not remain usable after returning from article mode');
   await pause(300);
+  assert.equal((await shellContents.executeJavaScript('desktop.request("settings-info")')).ok, false);
+  assert.equal((await navigationContents.executeJavaScript('desktop.request("cubox-clear")')).ok, false);
+  await shellContents.executeJavaScript('document.getElementById("cubox-save").click()');
+  await until(() => BrowserWindow.getAllWindows().some(window => window.webContents.getURL().endsWith('/settings.html')), 'First collect did not open settings');
+  const settings = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/settings.html'));
+  await until(() => settings.webContents.executeJavaScript('Boolean(window.desktop)'), 'Settings preload missing');
+  await settings.webContents.executeJavaScript(`document.getElementById('api-link').value='https://cubox.pro/c/api/save/fake_secret_123';document.getElementById('folder').value='测试';document.getElementById('settings').requestSubmit()`);
+  if (process.platform === 'win32') {
+    await until(() => settings.webContents.executeJavaScript('document.getElementById("result").textContent.includes("设置已保存")'), 'Windows secure settings did not save');
+    assert.equal(desktop.progress.summary().total, 2, 'Cubox changes overwrote reading targets');
+    assert.ok(!fs.readFileSync(path.join(app.getPath('userData'), 'cubox-settings.json'), 'utf8').includes('fake_secret'));
+    const calls = [];
+    await session.fromPartition('cubox-api').protocol.handle('https', async request => {
+      calls.push({ body: await request.json(), cookie: request.headers.get('cookie') });
+      await pause(200);
+      return Response.json({ code: 200 });
+    });
+    assert.equal(calls.length, 0);
+    settings.close();
+    await shellContents.executeJavaScript('desktop.command("cubox-save");desktop.command("cubox-save")');
+    await until(() => shellContents.executeJavaScript('document.getElementById("cubox-save").textContent.includes("已提交")'), 'Collect did not confirm submission');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.content, oc().getURL());
+    assert.equal(calls[0].body.title, oc().getTitle());
+    assert.equal(calls[0].body.folder, '测试');
+    assert.equal(calls[0].cookie, null);
+    await shellContents.executeJavaScript('desktop.command("cubox-save")');
+    await pause(100); assert.equal(calls.length, 1);
+    console.log('PASS: Cubox settings encrypted; isolated explicit current-article POST; duplicate blocked; IPC restricted');
+  } else {
+    await until(() => settings.webContents.executeJavaScript('document.getElementById("result").textContent.length > 0'), 'Settings result missing');
+    settings.close();
+    console.log('PASS: Cubox settings UI and IPC isolation (Windows covers OS encryption and submission)');
+  }
   await shellContents.executeJavaScript('desktop.command("width", 280)');
+  await until(() => reader.getBounds().width === 280, 'Final list width did not settle');
   assert.equal(await shellContents.executeJavaScript('document.querySelector("header").getBoundingClientRect().height'),44);
   assert.equal(await shellContents.executeJavaScript('document.getElementById("error").hidden'),true);
+  fs.writeFileSync(path.join(artifactDir, `toolbar-goal-${process.platform}.png`), (await shellContents.capturePage({x:0,y:0,width:win.getContentSize()[0],height:44}, {stayAwake:true})).toPNG());
   await shellContents.executeJavaScript('desktop.command("progress-period"); desktop.command("progress-period")');
   await until(() => shellContents.executeJavaScript('document.getElementById("progress-period").textContent === "全部" && document.getElementById("progress-count").textContent.includes("已完成 2 / 10")'), 'All progress did not retain completed articles');
   assert.equal(await shellContents.executeJavaScript('document.getElementById("reading-progress").max'), 10);
   assert.equal(await shellContents.executeJavaScript('document.getElementById("reading-progress").value'), 2);
   fs.writeFileSync(path.join(artifactDir, `toolbar-${process.platform}.png`), (await shellContents.capturePage({x:0,y:0,width:win.getContentSize()[0],height:44}, {stayAwake:true})).toPNG());
   if (process.platform === 'win32') {
-    win.show(); win.focus();
+    const widthBeforeMinimize = reader.getBounds().width;
+    win.minimize(); await pause(100);
+    await restoreTestWindow();
+    assert.equal(reader.getBounds().width, widthBeforeMinimize, 'Minimizing reset list width');
     await pause(700);
     const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 1500, height: 960 } });
     const ownWindow = sources.find(source => source.id === win.getMediaSourceId());
     assert.ok(ownWindow && !ownWindow.thumbnail.isEmpty(), 'Own window screenshot missing');
     fs.writeFileSync(path.join(artifactDir, 'smoke-win32.png'), ownWindow.thumbnail.toPNG());
+    await restoreTestWindow();
     await shellContents.executeJavaScript('document.getElementById("list-side").click()');
-    await until(() => reader.getBounds().x === win.getContentSize()[0] - 280, 'Final right layout missing');
+    try {
+      await until(() => reader.getBounds().x === win.getContentSize()[0] - 280, 'Final right layout missing');
+    } catch (error) {
+      console.error('Final layout diagnostic', reader.getBounds(), win.getContentSize(), await shellContents.executeJavaScript(`({body:document.body.className,side:document.getElementById('list-side').textContent,hidden:document.getElementById('splitter').hidden,width:getComputedStyle(document.documentElement).getPropertyValue('--list-width')})`));
+      throw error;
+    }
     await pause(300);
     const rightSources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 1500, height: 960 } });
     const rightWindow = rightSources.find(source => source.id === win.getMediaSourceId());
     assert.ok(rightWindow && !rightWindow.thumbnail.isEmpty());
     fs.writeFileSync(path.join(artifactDir, 'smoke-win32-right.png'), rightWindow.thumbnail.toPNG());
   }
+  const articleContents = [oc(), ...[...preloaded.values()].map(page => page.view.webContents)];
   win.destroy();
-  await until(() => rc.isDestroyed() && oc.isDestroyed() && navigationContents.isDestroyed(), 'Views leaked after window close');
+  await until(() => rc.isDestroyed() && articleContents.every(contents => contents.isDestroyed()) && navigationContents.isDestroyed(), 'Views leaked after window close');
   console.log('PASS: window close releases both remote views');
   app.quit();
 })().catch(error => { console.error(error); app.exit(1); });

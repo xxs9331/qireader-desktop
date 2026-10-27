@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>设置</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <h1>设置</h1>
+  <section aria-labelledby="goals-heading">
+  <h2 id="goals-heading">阅读目标</h2>
+  <form id="goals">
+    <div class="goal-row">
+      <label for="today-target">每日目标</label><input id="today-target" type="number" min="1" max="10000" step="1" required>
+      <label class="automatic"><input id="today-auto" type="checkbox">自动统计</label>
+    </div>
+    <div class="goal-row">
+      <label for="week-target">每周目标</label><input id="week-target" type="number" min="1" max="10000" step="1" required>
+      <label class="automatic"><input id="week-auto" type="checkbox">自动统计</label>
+    </div>
+    <p>自动模式按对应周期收录的稍后阅读文章统计；关闭后填写目标篇数，按本机确认完成的日期累计。本周从周一开始。</p>
+    <p id="goals-result" role="status" aria-live="polite"></p>
+    <div class="actions"><button id="save-goals" type="submit" disabled>保存阅读目标</button></div>
+  </form>
+  </section>
+  <section aria-labelledby="cubox-heading">
+  <h2 id="cubox-heading">Cubox 收藏</h2>
+  <p>在 Cubox「偏好设置 → 扩展中心和自动化 → API 扩展」中启用并复制链接。</p>
+  <div class="links"><button id="open-pro" type="button">查看 API 获取说明</button><button id="open-cc" type="button">cubox.cc 说明</button></div>
+  <form id="settings" autocomplete="off">
+    <label for="api-link">API 链接</label>
+    <input id="api-link" type="password" maxlength="2048" placeholder="https://cubox.pro/c/api/save/…" autocomplete="off" spellcheck="false">
+    <p id="configured">链接将加密保存在本机，不会提供给文章网页。</p>
+    <label for="folder">默认收藏夹（可选）</label>
+    <input id="folder" maxlength="128" placeholder="留空保存到收件箱">
+    <label for="tags">默认标签（可选）</label>
+    <input id="tags" maxlength="2048" placeholder="多个标签用逗号分隔">
+    <p id="result" role="status" aria-live="polite"></p>
+    <div class="actions"><button id="clear" type="button" title="仅清除本机 API 配置，不删除 Cubox 收藏">清除本机配置</button><button id="save" type="submit">保存收藏设置</button></div>
+  </form>
+  </section>
+  <footer><button id="close" type="button">关闭</button></footer>
+  <script src="settings.js"></script>
+</body>
+</html>

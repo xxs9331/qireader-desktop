@@ -9,3 +9,6 @@ test/zhihu-probe.cjs
 *.log
 reading-progress.json
 reading-progress.json.tmp
+
+cubox-settings.json
+cubox-settings.json.tmp

@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-for (const action of ['toggle-list', 'list-side', 'external']) $(action).addEventListener('click', () => window.desktop.command(action));
+for (const action of ['toggle-list', 'list-side', 'external', 'cubox-save', 'settings']) $(action).addEventListener('click', () => window.desktop.command(action));
 for (const [id, action] of [['progress-period', 'progress-period'], ['progress-count', 'progress-refresh'], ['progress-older', 'progress-older']]) {
   $(id).addEventListener('click', () => window.desktop.command(action));
 }
@@ -61,6 +61,12 @@ window.desktop.onState(state => {
   $('reader-zoom').textContent = `${state.readerZoom}%`;
   $('original-zoom').textContent = `${state.originalZoom}%`;
   $('external').disabled = !state.url;
+  if (state.cubox) {
+    const info = state.cubox;
+    $('cubox-save').textContent = info.busy ? '收藏中' : info.submitted ? '已提交 ✓' : '收藏';
+    $('cubox-save').disabled = info.busy || (info.configured && (!info.available || info.submitted));
+    $('cubox-save').title = info.submitted ? '已提交到 Cubox，正文由 Cubox 后台解析' : info.configured ? '收藏当前文章到 Cubox' : '设置 Cubox API 链接';
+  }
   $('error').textContent = state.error || '';
   $('error').title = `${state.error || ''}（点击关闭提示）`;
   $('error').hidden = !state.error;
@@ -69,20 +75,23 @@ window.desktop.onState(state => {
   if (stats) {
     $('progress-period').textContent = { today: '今日', week: '本周', all: '全部' }[state.progressPeriod];
     $('reading-status').classList.toggle('stale', Boolean(stats.error));
-    const count = stats.ready ? `已完成 ${stats.done} / ${stats.total} · ${stats.total === 0 ? '暂无文章' : stats.remaining || stats.error || stats.loading ? `剩余 ${stats.remaining}` : '已全部看完'}` : '等待同步';
+    const result = stats.automatic ? (stats.total === 0 ? '暂无文章' : stats.remaining ? `剩余 ${stats.remaining}` : '已全部看完') : stats.reached ? '已达标 ✓' : `还需 ${stats.remaining}`;
+    const count = stats.ready ? `已完成 ${stats.done} / ${stats.total} · ${result}` : '等待同步';
     $('progress-count').textContent = stats.error ? (stats.ready ? `${count} · 待同步` : '统计未同步 ↻') : stats.loading ? (stats.ready ? `${count} ↻` : '同步中…') : count;
     $('progress-count').disabled = stats.loading;
     $('reading-progress').max = Math.max(1, stats.total);
-    $('reading-progress').value = stats.done;
+    $('reading-progress').value = Math.min(stats.done, stats.total);
     $('reading-progress').setAttribute('aria-valuetext', stats.ready ? count : '统计尚未同步');
     $('progress-older').hidden = !stats.ready || !stats.older;
     $('progress-older').textContent = `往期 ${stats.older}`;
     $('progress-count').title = [
-      '仅统计稍后阅读；按 QiReader 收录时间划分，周一开始。',
-      '移出稍后阅读计为完成（含手动移出）；重新加入后恢复待看。',
+      stats.automatic ? '自动模式：按当前周期收录的稍后阅读文章统计；周一开始。重新加入后恢复待看。' :
+        '手动目标：按本机确认完成的日期统计，周一开始；阅读以前收录的文章也计入。每篇文章在当前周期最多计一次，重新加入不扣除已完成量。',
+      '仅统计稍后阅读；服务器确认移出后计为完成（含手动移出）。旧版本未记录完成日期，不能补算目标进度；其他设备的移出不推测完成日期。',
       stats.startedAt ? `记录始于 ${new Date(stats.startedAt).toLocaleString()}，启用前已移出的文章无法补回。` : '首次同步后开始记录；启用前已移出的文章无法补回。',
       stats.updatedAt ? `最近完整同步：${new Date(stats.updatedAt).toLocaleString()}。` : '',
-      stats.error, '点击重新同步；其他设备的变动约每 5 分钟同步。'
+      stats.error, '本机阅读即时更新；启动时最多每天自动全量同步一次。',
+      '其他设备的变动可手动同步（间隔至少 30 分钟）；每日统计列表请求上限 100 次。'
     ].filter(Boolean).join('\n');
   }
 });
