@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][string]$RuntimeZip)
+param([Parameter(Mandatory = $true)][string]$RuntimeZip, [ValidateSet('first', 'restart', 'budget')][string[]]$Phases = @('first', 'restart', 'budget'))
 $ErrorActionPreference = 'Stop'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('qireader-smoke-' + [guid]::NewGuid().ToString('N'))
 $runtime = Join-Path $testRoot 'runtime'
@@ -8,14 +8,13 @@ try {
     New-Item -ItemType Directory -Path $profile -Force | Out-Null
     Expand-Archive -LiteralPath $RuntimeZip -DestinationPath $runtime
     $env:QIREADER_TEST_PROFILE = $profile
-    $phases = @('first', 'restart')
-    foreach ($phase in $phases) {
+    foreach ($phase in $Phases) {
         $env:QIREADER_TEST_PHASE = $phase
         $stdout = Join-Path $testRoot ($phase + '.out.log')
         $stderr = Join-Path $testRoot ($phase + '.err.log')
         $process = Start-Process -FilePath (Join-Path $runtime 'electron.exe') -ArgumentList ('"' + $smoke + '"') -WorkingDirectory $runtime -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
         $null = $process.Handle # Retain the exit code when the process exits before Refresh.
-        if (-not $process.WaitForExit(60000)) {
+        if (-not $process.WaitForExit(150000)) {
             $process.Kill()
             throw "Windows browser test timed out: $phase"
         }

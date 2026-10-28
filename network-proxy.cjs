@@ -1,8 +1,11 @@
 const fs = require('node:fs');
+const path = require('node:path');
 const { domainToASCII } = require('node:url');
 const { isIP } = require('node:net');
 const connectionErrors = new Set(['ERR_NAME_NOT_RESOLVED', 'ERR_CONNECTION_REFUSED', 'ERR_CONNECTION_RESET',
-  'ERR_CONNECTION_CLOSED', 'ERR_CONNECTION_TIMED_OUT', 'ERR_TIMED_OUT', 'ERR_ADDRESS_UNREACHABLE']);
+  'ERR_CONNECTION_CLOSED', 'ERR_CONNECTION_TIMED_OUT', 'ERR_TIMED_OUT', 'ERR_ADDRESS_UNREACHABLE',
+  'ERR_FAILED', 'ERR_EMPTY_RESPONSE', 'ERR_CONNECTION_ABORTED', 'ERR_SSL_PROTOCOL_ERROR',
+  'ERR_HTTP2_PROTOCOL_ERROR', 'ERR_QUIC_PROTOCOL_ERROR', 'ERR_CONTENT_LENGTH_MISMATCH', 'ERR_INCOMPLETE_CHUNKED_ENCODING']);
 
 function settings(value) {
   if (!value || !['system', 'direct', 'custom'].includes(value.mode) || !['selected', 'all'].includes(value.scope) ||
@@ -52,6 +55,7 @@ function proxyConfig(value) {
 class NetworkProxy {
   constructor({ file, sessions }) {
     this.file = file; this.sessions = sessions;
+    this.logFile = path.join(path.dirname(file), 'network.log');
     this.config = { mode: 'system', address: '', scope: 'selected', domains: [], autoLearn: false };
     this.active = false; this.busy = false; this.learning = false; this.error = '';
     for (const ses of sessions) ses.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (_details, callback) => {
@@ -79,33 +83,61 @@ class NetworkProxy {
     fs.writeFileSync(`${this.file}.tmp`, JSON.stringify({ version: 1, ...value }), { mode: 0o600 });
     fs.renameSync(`${this.file}.tmp`, this.file);
   }
+  log(event, url, details = {}) {
+    try {
+      const entry = { time: new Date().toISOString(), event, host: new URL(url).hostname };
+      if (/^ERR_[A-Z0-9_]+$/.test(details.code)) entry.code = details.code;
+      if (Number.isInteger(details.status)) entry.status = details.status;
+      if (['direct', 'proxy', 'system'].includes(details.route)) entry.route = details.route;
+      for (const key of ['page', 'attempt', 'elapsedMs']) if (Number.isSafeInteger(details[key]) && details[key] >= 0) entry[key] = details[key];
+      if (['foreground', 'pool'].includes(details.stage)) entry.stage = details.stage;
+      if (fs.existsSync(this.logFile) && fs.statSync(this.logFile).size >= 1024 * 1024) fs.renameSync(this.logFile, this.logFile + '.1');
+      fs.appendFileSync(this.logFile, JSON.stringify(entry) + '\n', { mode: 0o600 });
+    } catch { /* Logging must not interrupt reading. */ }
+  }
+  route(url) {
+    if (this.config.mode !== 'custom') return this.config.mode;
+    const host = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+    return this.config.scope === 'all' || this.config.domains.some(domain => host === domain || host.endsWith('.' + domain)) ? 'proxy' : 'direct';
+  }
+  retryHost(url) {
+    const value = this.config;
+    if (!this.active || this.busy || value.mode !== 'custom' || value.scope !== 'selected' ||
+        !value.autoLearn || value.domains.length >= 100) return null;
+    try {
+      const target = new URL(url), host = target.hostname.toLowerCase().replace(/\.$/, '');
+      if (['http:', 'https:'].includes(target.protocol) && !target.username && !target.password && host.includes('.') &&
+          !host.startsWith('[') && !isIP(host) && !host.endsWith('.localhost') && !host.endsWith('.local') && this.route(url) === 'direct') return host;
+    } catch {}
+    return null;
+  }
   async tryProxy(url, error, retry) {
     await this.ready;
     const previous = this.config;
-    if (!this.active || this.busy || this.learning || previous.mode !== 'custom' || previous.scope !== 'selected' ||
-        !previous.autoLearn || previous.domains.length >= 100 || !connectionErrors.has(error.code)) return false;
+    const host = this.retryHost(url);
+    if (this.learning || !host || !connectionErrors.has(error.code)) { this.log('proxy-skipped', url, { code: error.code }); return false; }
     let candidate;
     try {
-      const target = new URL(url), host = target.hostname.toLowerCase().replace(/\.$/, '');
-      if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password ||
-          !host.includes('.') || host.startsWith('[') || isIP(host) || host.endsWith('.localhost') || host.endsWith('.local') ||
-          previous.domains.some(domain => host === domain || host.endsWith('.' + domain))) return false;
       candidate = settings({ ...previous, domains: [...previous.domains, host].join('\n') });
     } catch { return false; }
     this.learning = true; this.error = '';
+    this.log('proxy-trial', url, { code: error.code, route: 'proxy' });
     try {
-      // The failed host has no usable connection; leave other in-flight requests alone.
+      // Leave unrelated in-flight requests alone when trying a single failed host.
       await this.apply(candidate, false);
-      if (!await retry()) return false;
+      if (!await retry()) { this.log('proxy-failed', url, { route: 'proxy' }); return false; }
+      this.log('proxy-success', url, { route: 'proxy' });
       this.save(candidate); this.config = candidate; this.error = '';
+      this.log('rule-saved', url, { route: 'proxy' });
       return true;
     } catch {
+      this.log('proxy-apply-or-save-failed', url);
       this.error = '自动代理未能应用或保存，请在设置中手动添加域名';
       return false;
     } finally {
       if (this.config === previous) {
         try { await this.apply(previous, false); }
-        catch { this.active = false; this.error = '代理恢复失败，网络已暂停；请重新保存有效设置'; }
+        catch { this.active = false; this.error = '代理恢复失败，网络已暂停；请重新保存有效设置'; this.log('proxy-rollback-failed', url); }
       }
       this.learning = false;
     }

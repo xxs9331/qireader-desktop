@@ -1,10 +1,11 @@
-const { app, BaseWindow, BrowserWindow, WebContentsView, ipcMain, session, shell, dialog, Menu, safeStorage } = require('electron');
+const { app, BaseWindow, BrowserWindow, WebContentsView, webContents, ipcMain, session, shell, dialog, Menu, safeStorage } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { READER_ORIGINS, webURL, readerURL } = require('./policy.cjs');
 const { ReadingProgress } = require('./reading-progress.cjs');
 const { Cubox } = require('./cubox.cjs');
 const { NetworkProxy } = require('./network-proxy.cjs');
+const { Shortcuts } = require('./shortcuts.cjs');
 const settingsPath = path.join(__dirname, 'settings.html');
 const settingsURL = pathToFileURL(settingsPath).href;
 
@@ -15,6 +16,7 @@ const navigationURL = pathToFileURL(navigationPath).href;
 const remotePreferences = { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true };
 
 function createWindow() {
+  const shortcuts = new Shortcuts(path.join(app.getPath('userData'), 'shortcuts.json'));
   const browserSession = session.fromPartition('persist:qireader-desktop');
   const cuboxSession = session.fromPartition('cubox-api');
   const networkProxy = new NetworkProxy({ file: path.join(app.getPath('userData'), 'proxy-settings.json'), sessions: [browserSession, cuboxSession] });
@@ -22,15 +24,16 @@ function createWindow() {
   browserSession.setPermissionCheckHandler(() => false);
   const win = new BaseWindow({
     width: 1500, height: 960, minWidth: 960, minHeight: 600,
-    title: 'QiReader Desktop 0.11.1', backgroundColor: '#ffffff'
+    title: 'QiReader Desktop 0.13.1', backgroundColor: '#ffffff'
   });
   const shellView = new WebContentsView({ webPreferences: { ...remotePreferences, backgroundThrottling: false, preload: path.join(__dirname, 'shell-preload.cjs') } });
   const shellContents = shellView.webContents;
   win.contentView.addChildView(shellView);
   const reader = new WebContentsView({ webPreferences: {
-    ...remotePreferences, session: browserSession, preload: path.join(__dirname, 'reader-preload.cjs')
+    ...remotePreferences, backgroundThrottling: false, session: browserSession, preload: path.join(__dirname, 'reader-preload.cjs'), additionalArguments: ['--qireader-list']
   } });
   const preloaded = new Map();
+  const failedPreparations = new Set();
   let originalPage = createOriginalPage();
   let original = originalPage.view;
   const navigation = new WebContentsView({ webPreferences: { ...remotePreferences, preload: path.join(__dirname, 'shell-preload.cjs') } });
@@ -47,6 +50,7 @@ function createWindow() {
   let dragging = false;
   let dragRequest = 0;
   let selectedURL = '';
+  let pendingURL = '', selection = 0, poolState = '', proxyQueue = Promise.resolve();
   let prefetchAnchor = '', prefetchRoute = '', prefetchTargets = [];
   const state = { error: '', url: '', listHidden: false, listWidth, listSide, readerZoom: 100, originalZoom: 100, canPrevious: false, canNext: false, progressPeriod: 'today' };
   const progress = new ReadingProgress({
@@ -62,10 +66,10 @@ function createWindow() {
     if (settingsWindow) { settingsWindow.focus(); return; }
     settingsWindow = new BrowserWindow({ parent: win, modal: true, width: 560, height: 760, minWidth: 480, minHeight: 480,
       title: '设置', autoHideMenuBar: true,
-      webPreferences: { ...remotePreferences, preload: path.join(__dirname, 'shell-preload.cjs') } });
+      webPreferences: { ...remotePreferences, backgroundThrottling: false, preload: path.join(__dirname, 'shell-preload.cjs') } });
     settingsWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     settingsWindow.webContents.on('will-navigate', event => event.preventDefault());
-    settingsWindow.on('closed', () => { settingsWindow = null; });
+    settingsWindow.on('closed', () => { settingsWindow = null; setImmediate(focusReading); });
     settingsWindow.loadFile(settingsPath);
   }
   ipcMain.handle('desktop:request', async (event, message) => {
@@ -80,6 +84,8 @@ function createWindow() {
         const current = reader.webContents.getURL();
         void load(reader.webContents, readerURL(current) ? current : `${READER_ORIGINS[0]}/tags/!readlater`, 'reader');
         if (selectedURL) void loadPage(originalPage, webURL(original.webContents.getURL()) || selectedURL);
+      } else if (message?.action === 'shortcuts-configure') {
+        shortcuts.configure(message.value); broadcastShortcuts();
       } else if (message?.action === 'goals-configure') progress.setGoals(message.value);
       else if (message?.action === 'cubox-configure') await cubox.configure(message.value);
       else if (message?.action === 'cubox-clear') await cubox.clear();
@@ -87,7 +93,7 @@ function createWindow() {
         await shell.openExternal(message.value === 'cc' ? 'https://help.cubox.cc/save/api/' : 'https://help.cubox.pro/save/89d3/');
       } else if (message?.action !== 'settings-info') return { ok: false, error: '未知操作' };
       publish();
-      return { ok: true, info: cubox.summary(), proxy: networkProxy.summary(), goals: { today: progress.summary('today'), week: progress.summary('week') } };
+      return { ok: true, info: cubox.summary(), proxy: networkProxy.summary(), shortcuts: shortcuts.summary(), goals: { today: progress.summary('today'), week: progress.summary('week') } };
     } catch (error) { return { ok: false, error: message?.action === 'cubox-open-web' ? '无法打开浏览器' : error.message }; }
   });
   const changedEntries = new Set();
@@ -105,11 +111,41 @@ function createWindow() {
 
   function publish() {
     if (!win.isDestroyed()) {
-      shellContents.send('shell:state', { ...state, progress: progress.summary(state.progressPeriod),
+      shellContents.send('shell:state', { ...state, shortcuts: shortcuts.bindings, progress: progress.summary(state.progressPeriod),
         cubox: { ...cubox.summary(original.webContents.getURL()), busy: collecting || cubox.busy,
           available: Boolean(selectedURL && originalPage.ready && !originalPage.failed && originalPage.status < 400 && !original.webContents.isLoadingMainFrame() && webURL(original.webContents.getURL())) } });
-      navigationContents.send('shell:state', { canPrevious: state.canPrevious, canNext: state.canNext });
+      const pool = { ready: [...preloaded.values()].filter(page => page.ready).map(page => page.url),
+        preparing: Boolean(pendingURL) || [...preloaded.values()].some(page => !page.ready) };
+      if (originalPage.ready) pool.ready.push(selectedURL);
+      const serialized = JSON.stringify(pool);
+      if (serialized !== poolState && !reader.webContents.isDestroyed()) {
+        poolState = serialized; reader.webContents.send('reader:pool', pool);
+      }
+      navigationContents.send('shell:state', { canPrevious: state.canPrevious, canNext: state.canNext, preparing: pool.preparing, shortcuts: shortcuts.bindings });
     }
+  }
+  function broadcastShortcuts() {
+    for (const contents of [reader.webContents, original.webContents, shellContents, navigationContents, ...[...preloaded.values()].map(page => page.view.webContents)]) {
+      if (contents && !contents.isDestroyed()) contents.send('desktop:bindings', shortcuts.bindings);
+    }
+  }
+  async function focusReading() {
+    const page = originalPage;
+    const available = () => !win.isDestroyed() && win.isFocused() && !settingsWindow && !popups.size && !dragging &&
+      page === originalPage && page.ready && !original.webContents.isDestroyed();
+    if (!available()) return;
+    const focused = webContents.getFocusedWebContents();
+    if (focused === reader.webContents) {
+      try {
+        const editing = await focused.executeJavaScript(`(() => {
+          let node = document.activeElement;
+          while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement;
+          return Boolean(node?.isContentEditable || node?.closest('input,textarea,select,iframe,[role="textbox"],[role="searchbox"],[role="combobox"],[role="dialog"],dialog'));
+        })()`);
+        if (editing) return;
+      } catch { return; }
+    }
+    if (available() && (focused !== reader.webContents || webContents.getFocusedWebContents() === focused)) original.webContents.focus();
   }
   function layout() {
     const [width, height] = win.getContentSize();
@@ -137,43 +173,72 @@ function createWindow() {
     state.dragging = dragging;
     publish();
   }
-  function navigate(contents, url, page) {
+  function navigate(contents, url, page, proxyTrial = false) {
     if (!page) return contents.loadURL(url).then(() => true);
     return new Promise((resolve, reject) => {
+      const generation = page.generation;
+      let timer, slowTimer, settled = false;
+      page.proxyTrial = proxyTrial; page.navigationURL = url;
+      const address = () => page.generation === generation ? page.navigationURL || url : url;
+      const route = () => proxyTrial ? 'proxy' : networkProxy.route(address());
+      const details = () => ({ route: route(), status: page.status, page: contents.id, attempt: generation,
+        stage: page === originalPage ? 'foreground' : 'pool', elapsedMs: Date.now() - page.startedAt });
+      networkProxy.log('load-start', url, details());
       const finish = (error, ok = false) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); clearTimeout(slowTimer);
         contents.removeListener('dom-ready', ready); contents.removeListener('destroyed', destroyed);
+        networkProxy.log(error ? 'load-failed' : ok ? 'document-ready' : 'document-rejected', address(), { ...details(), code: error?.code });
         if (error) reject(error); else resolve(ok);
       };
-      const ready = () => { if (page.status > 0) finish(null, page.status < 400 && !page.failed); };
+      const ready = () => { if (page.generation === generation && page.status > 0) finish(null, page.status < 400 && !page.failed); };
       const destroyed = () => finish(Object.assign(new Error('Page closed'), { code: 'ERR_ABORTED' }));
       contents.on('dom-ready', ready); contents.once('destroyed', destroyed);
+      if (!proxyTrial) slowTimer = setTimeout(() => {
+        if (!settled && page.generation === generation) networkProxy.log('prepare-slow', address(), details());
+      }, 2000);
+      const remaining = Math.max(1, page.deadline - Date.now());
+      timer = setTimeout(() => {
+          if (settled || contents.isDestroyed()) return;
+          if (page.generation !== generation) { destroyed(); return; }
+          const target = address();
+          networkProxy.log('document-timeout', target, details());
+          if (page.status >= 400) finish(null, false);
+          else finish(Object.assign(new Error('Document readiness timed out'), { code: 'ERR_TIMED_OUT', url: target }));
+          contents.stop();
+      }, !proxyTrial && networkProxy.retryHost(url) ? Math.min(5000, remaining) : remaining);
       // Images may still be loading after the document is available to read.
-      contents.loadURL(url).then(() => finish(null, page.status > 0 && page.status < 400 && !page.failed), error => finish(error));
+      contents.loadURL(url).then(() => {
+        if (page.generation !== generation) destroyed();
+        else if (page.status > 0) finish(null, page.status < 400 && !page.failed);
+      }, error => finish(error));
     });
   }
   async function load(contents, url, pane, quiet = false, page) {
+    const generation = page?.generation;
     await networkProxy.ready;
-    if (win.isDestroyed() || contents.isDestroyed()) return false;
+    if (win.isDestroyed() || contents.isDestroyed() || (page && page.generation !== generation)) return false;
     if (!networkProxy.active || networkProxy.busy) {
       if (!quiet) { state.error = '网络设置尚未就绪，请在设置中保存有效的代理配置'; publish(); }
       return false;
     }
     return navigate(contents, url, page).catch(async error => {
-      if (error.code === 'ERR_ABORTED' || win.isDestroyed()) return false;
+      if (error.code === 'ERR_ABORTED' || win.isDestroyed() || (page && page.generation !== generation)) return false;
       const foregroundOriginal = pane === 'original' && contents === original.webContents;
-      if (foregroundOriginal) {
-        const generation = page.generation;
+      if (page) {
         const failedURL = page.failedURL || error.url || url;
-        const current = () => !win.isDestroyed() && !contents.isDestroyed() && page === originalPage && generation === page.generation;
-        const retried = await networkProxy.tryProxy(failedURL, error, async () => {
+        const current = () => !win.isDestroyed() && !contents.isDestroyed() && generation === page.generation && Date.now() < page.deadline;
+        const retry = async () => current() && networkProxy.tryProxy(failedURL, error, async () => {
           if (!current()) return false;
-          clearPreloaded(); state.error = '正在通过代理重试…'; publish();
           try {
-            return await navigate(contents, failedURL, page) && current();
+            return await navigate(contents, failedURL, page, true) && current();
           } catch { return false; }
         });
+        const attempt = proxyQueue.then(retry);
+        proxyQueue = attempt.catch(() => false);
+        const retried = await attempt;
         if (!current()) return false;
-        if (retried) { state.error = ''; publish(); return true; }
+        if (retried) { if (foregroundOriginal) state.error = ''; publish(); return true; }
       }
       if (!quiet || foregroundOriginal) {
         state.error = networkProxy.error || (pane === 'original' && originalPage.status >= 400 ?
@@ -185,7 +250,7 @@ function createWindow() {
   }
   function createOriginalPage() {
     const page = {
-      view: new WebContentsView({ webPreferences: { ...remotePreferences, session: browserSession } }),
+      view: new WebContentsView({ webPreferences: { ...remotePreferences, session: browserSession, preload: path.join(__dirname, 'reader-preload.cjs') } }),
       url: '', status: 0, ready: false, failed: false, generation: 0, loading: null
     };
     observeRemote('original', page.view, page);
@@ -193,52 +258,93 @@ function createWindow() {
   }
   function disposePage(page) {
     page.generation++;
-    if (!win.isDestroyed()) win.contentView.removeChildView(page.view);
+    page.cancel?.();
+    if (!win.isDestroyed() && win.contentView.children.includes(page.view)) win.contentView.removeChildView(page.view);
     if (!page.view.webContents.isDestroyed()) page.view.webContents.close();
   }
   function clearPreloaded() {
+    selection++; pendingURL = ''; state.preparing = false;
     for (const page of preloaded.values()) disposePage(page);
     preloaded.clear();
+    failedPreparations.clear();
   }
   function reconcilePreloads() {
-    if (win.isDestroyed() || prefetchAnchor !== selectedURL ||
+    if (win.isDestroyed() || prefetchAnchor !== (pendingURL || selectedURL) ||
         !readerURL(reader.webContents.getURL()) || new URL(reader.webContents.getURL()).pathname !== prefetchRoute) return;
-    const targets = new Set(prefetchTargets.filter(url => url !== selectedURL));
+    const targets = new Set([pendingURL, ...prefetchTargets].filter(url => url && (url !== selectedURL || url === pendingURL)));
     for (const [url, page] of preloaded) {
       if (!targets.has(url)) { preloaded.delete(url); disposePage(page); }
     }
-    if (!originalPage.ready || popups.size) return;
+    if (popups.size) return;
     for (const url of targets) {
-      if (preloaded.has(url)) continue;
+      if (preloaded.size >= 2) break;
+      if (preloaded.has(url) || failedPreparations.has(url)) continue;
       const page = createOriginalPage();
       page.view.setBounds(original.getBounds()); page.view.setVisible(false);
       page.view.webContents.setAudioMuted(true);
-      preloaded.set(url, page); win.contentView.addChildView(page.view);
+      // Detached preloads cannot take keyboard focus from the visible window.
+      preloaded.set(url, page);
       loadPage(page, url, true);
     }
   }
   function loadPage(page, url, quiet = false) {
+    page.cancel?.();
     const generation = ++page.generation;
+    page.startedAt = Date.now(); page.deadline = page.startedAt + 60000;
     page.url = url; page.ready = false; page.failed = false; page.status = 0;
-    page.loading = load(page.view.webContents, url, 'original', quiet, page).then(ok => {
+    let deadlineTimer;
+    const cancelled = new Promise(resolve => { page.cancel = () => resolve(false); });
+    deadlineTimer = setTimeout(() => {
+      page.failed = true; page.generation++;
+      networkProxy.log('prepare-expired', url, { page: page.view.webContents.id, attempt: generation, elapsedMs: Date.now() - page.startedAt });
+      page.cancel(); page.view.webContents.stop();
+    }, 60000);
+    page.loading = Promise.race([load(page.view.webContents, url, 'original', quiet, page), cancelled]).then(ok => {
+      clearTimeout(deadlineTimer);
       if (generation !== page.generation || win.isDestroyed()) return false;
       page.ready = ok && page.status < 400; page.failed = !page.ready;
-      if (page === originalPage && page.ready) reconcilePreloads();
       return page.ready;
+    }).then(ok => {
+      if (win.isDestroyed()) return false;
+      if (!ok && preloaded.get(url) === page) {
+        preloaded.delete(url); failedPreparations.add(url); disposePage(page);
+      }
+      reconcilePreloads(); publish();
+      return ok;
     });
     return page.loading;
   }
-  function openOriginal(value) {
+  async function openOriginal(value) {
     const url = webURL(value);
-    if (!url) return;
+    if (!url) return false;
+    const request = ++selection;
+    pendingURL = url; state.preparing = true; state.error = '';
+    failedPreparations.delete(url);
     let cached = preloaded.get(url);
-    if (cached) {
-      preloaded.delete(url);
-      if (cached.failed || cached.view.webContents.isDestroyed()) { disposePage(cached); cached = null; }
+    if (!cached) {
+      while (preloaded.size >= 2) {
+        const [key, page] = [...preloaded].at(-1); preloaded.delete(key); disposePage(page);
+      }
+      cached = createOriginalPage(); cached.view.setBounds(original.getBounds()); cached.view.setVisible(false);
+      cached.view.webContents.setAudioMuted(true);
+      preloaded.set(url, cached);
+      loadPage(cached, url, true);
     }
-    if (cached) {
+    reconcilePreloads(); publish();
+    const ok = cached.ready || await cached.loading;
+    if (request !== selection || win.isDestroyed()) return false;
+    pendingURL = ''; state.preparing = false;
+    if (!ok || cached.view.webContents.isDestroyed()) {
+      state.error = cached.status >= 400 ? `网页加载失败（HTTP ${cached.status}）` : '网页加载失败，请稍后重试';
+      reconcilePreloads(); publish(); return false;
+    }
+    preloaded.delete(url);
+    networkProxy.log('pool-promote', url, { page: cached.view.webContents.id, attempt: cached.generation, elapsedMs: Date.now() - cached.startedAt });
+    {
       const previous = originalPage;
       originalPage = cached; original = cached.view;
+      // A promoted hidden view can retain background visibility and drop keyboard input.
+      original.webContents.setBackgroundThrottling(false);
       original.webContents.setAudioMuted(false);
       original.webContents.setZoomFactor(state.originalZoom / 100);
       disposePage(previous);
@@ -247,10 +353,9 @@ function createWindow() {
     state.url = cached?.ready ? original.webContents.getURL() : url;
     state.error = '';
     layout();
-    const page = originalPage;
-    const loading = cached ? cached.loading : loadPage(page, url);
     reconcilePreloads();
-    return loading.then(ok => ok && originalPage === page && selectedURL === url);
+    void focusReading();
+    return true;
   }
   function secureRemote(contents, foreground = () => true) {
     contents.on('zoom-changed', (_event, direction) => setZoom(contents, direction === 'in' ? 10 : -10));
@@ -290,7 +395,7 @@ function createWindow() {
       popups.add(popup);
       clearPreloaded();
       secureRemote(popup.webContents);
-      popup.on('closed', () => { popups.delete(popup); reconcilePreloads(); });
+      popup.on('closed', () => { popups.delete(popup); reconcilePreloads(); setImmediate(focusReading); });
     });
   }
   function setZoom(contents, change) {
@@ -305,13 +410,16 @@ function createWindow() {
     const foreground = () => pane === 'reader' || page === originalPage;
     secureRemote(contents, foreground);
     contents.on('dom-ready', () => {
+      contents.send('desktop:bindings', shortcuts.bindings);
       contents.setZoomFactor(state[`${pane}Zoom`] / 100);
     });
-    contents.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => {
-      if (page && isMainFrame && !inPlace) { page.status = 0; page.failedURL = ''; }
+    for (const name of ['did-start-navigation', 'did-redirect-navigation']) contents.on(name, (_event, url, inPlace, isMainFrame) => {
+      if (page && isMainFrame && !inPlace) { page.status = 0; page.failedURL = ''; page.navigationURL = url; }
     });
     contents.on('did-navigate', (_event, url, status) => {
       if (page) { page.status = status; page.failed = status >= 400; }
+      if (page) networkProxy.log('response', url, { status, route: page.proxyTrial ? 'proxy' : networkProxy.route(url),
+        page: contents.id, attempt: page.generation, elapsedMs: Date.now() - page.startedAt, stage: foreground() ? 'foreground' : 'pool' });
       if (!foreground()) return;
       if (pane === 'original') state.url = url;
       if (status >= 400) state.error = `网页加载失败（HTTP ${status}）`;
@@ -343,7 +451,7 @@ function createWindow() {
         !readerURL(event.senderFrame.url) || !message || typeof message.id !== 'string' || !message.id ||
         new URL(event.senderFrame.url).pathname !== message.route || !webURL(message.url)) return { ok: false };
     const later = message.trackCompletion === true && /^\/tags\/!readlater\/?$/.test(decodeURI(message.route));
-    pendingCompletions.delete(message.id);
+    if (later) pendingCompletions.delete(message.id);
     let pending;
     if (later) {
       const origin = new URL(event.senderFrame.url).origin;
@@ -360,6 +468,18 @@ function createWindow() {
     if ((!fromShell && !fromNavigation) || !message) return;
     const { action, value } = message;
     if (fromNavigation && !['ready', 'previous', 'next'].includes(action)) return;
+    return perform(action, value);
+  }
+  async function shortcut(event, action) {
+    const { sender, senderFrame } = event;
+    if (settingsWindow || !['previous', 'next', 'cubox-save'].includes(action) || !shortcuts.bindings[action] || senderFrame !== sender.mainFrame) return;
+    const allowed = sender === reader.webContents && readerURL(senderFrame.url) ||
+      sender === original.webContents && webURL(senderFrame.url) ||
+      sender === shellContents && senderFrame.url === shellURL || sender === navigationContents && senderFrame.url === navigationURL;
+    if (allowed) return perform(action);
+  }
+  ipcMain.on('desktop:shortcut', shortcut);
+  async function perform(action, value) {
     if (action === 'ready') publish();
     if (action === 'settings') openSettings();
     if (action === 'cubox-save' && !collecting) {
@@ -371,7 +491,7 @@ function createWindow() {
       catch (error) { state.error = error.message; }
       finally { collecting = false; publish(); }
     }
-    if (action === 'zoom' && message.value && ['reader', 'original'].includes(value.pane) && [-10, 0, 10].includes(value.change)) {
+    if (action === 'zoom' && value && ['reader', 'original'].includes(value.pane) && [-10, 0, 10].includes(value.change)) {
       setZoom(value.pane === 'reader' ? reader.webContents : original.webContents, value.change);
     }
     if (action === 'width' && Number.isFinite(value)) { listWidth = value; layout(); }
@@ -424,12 +544,13 @@ function createWindow() {
   function navigationState(event, message) {
     if (event.sender !== reader.webContents || event.senderFrame !== reader.webContents.mainFrame || !readerURL(event.senderFrame.url) ||
         !message || message.route !== new URL(event.senderFrame.url).pathname) return;
+    if (prefetchRoute && prefetchRoute !== message.route) clearPreloaded();
     state.canPrevious = message.previous === true;
     state.canNext = message.next === true;
     prefetchAnchor = webURL(message.current) || '';
     prefetchRoute = message.route;
-    prefetchTargets = Array.isArray(message.upcoming) ? message.upcoming.slice(0, 2).map(webURL).filter(Boolean) : [];
-    if (!prefetchAnchor) clearPreloaded();
+    prefetchTargets = Array.isArray(message.upcoming) ? message.upcoming.slice(0, 64).map(webURL).filter(Boolean) : [];
+    if (!prefetchAnchor && !pendingURL) clearPreloaded();
     else reconcilePreloads();
     publish();
   }
@@ -464,10 +585,12 @@ function createWindow() {
   ipcMain.on('reader:progress-changed', progressChanged);
   ipcMain.on('shell:command', command);
   for (const contents of [shellContents, navigationContents]) {
+    contents.on('dom-ready', () => contents.send('desktop:bindings', shortcuts.bindings));
     contents.setWindowOpenHandler(() => ({ action: 'deny' }));
     contents.on('will-navigate', event => event.preventDefault());
   }
   win.on('resize', layout);
+  win.on('focus', () => setImmediate(focusReading));
   let flushing = false, flushed = false;
   win.on('close', event => {
     if (flushed) return;
@@ -492,6 +615,7 @@ function createWindow() {
     ipcMain.removeListener('reader:completed', completed);
     ipcMain.removeListener('reader:progress-changed', progressChanged);
     ipcMain.removeListener('shell:command', command);
+    ipcMain.removeListener('desktop:shortcut', shortcut);
     for (const popup of popups) popup.destroy();
     clearPreloaded();
     reader.webContents.close();

@@ -5,9 +5,9 @@ const path = require('node:path');
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'qireader-desktop-test-'));
 try {
-  for (const phase of ['first', 'restart']) {
+  for (const phase of ['first', 'restart', 'budget']) {
     const result = spawnSync(require('electron'), [path.join(__dirname, 'smoke.cjs')], {
-      stdio: 'inherit', timeout: 60000, killSignal: 'SIGKILL',
+      stdio: 'inherit', timeout: 150000, killSignal: 'SIGKILL',
       env: { ...process.env, QIREADER_TEST_PROFILE: profile, QIREADER_TEST_PHASE: phase }
     });
     if (result.error) throw result.error;

@@ -1,14 +1,56 @@
 const { ipcRenderer } = require('electron');
+let bindings = {};
+ipcRenderer.on('desktop:bindings', (_event, value) => { bindings = value; });
+
+if (process.isMainFrame) window.addEventListener('keydown', event => {
+  if (!event.isTrusted || event.repeat || event.isComposing || event.composedPath().some(node =>
+    node instanceof Element && (node.isContentEditable || node.matches('input,textarea,select,[role="textbox"],[role="searchbox"],[role="combobox"],[role="dialog"],dialog')))) return;
+  const key = event.code === 'Space' || event.key === ' ' ? 'Space' : event.key.length === 1 ? event.key.toUpperCase() : event.key;
+  const binding = [event.ctrlKey && 'Ctrl', event.altKey && 'Alt', event.shiftKey && 'Shift', event.metaKey && 'Meta', key].filter(Boolean).join('+');
+  const action = Object.keys(bindings).find(action => bindings[action] && bindings[action] === binding);
+  if (!action) return;
+  event.preventDefault(); event.stopImmediatePropagation();
+  ipcRenderer.send('desktop:shortcut', action);
+}, true);
 
 // Use rendered QiReader controls; expose no desktop API to the website.
-if (process.isMainFrame && ['https://www.qireader.com', 'https://www.qireader.com.cn'].includes(location.origin)) {
+if (process.isMainFrame && process.argv.includes('--qireader-list') && ['https://www.qireader.com', 'https://www.qireader.com.cn'].includes(location.origin)) {
     const removed = new Set();
+    const removing = new Set();
+    let readyURLs = new Set();
+    let openingSequence = 0;
     let queue = [], cursor = -1, queueRoute = '', opening = false, lastNavigation = '';
+    let paginationKey = '', paginationPaused = false, lastPageRequest = 0;
     function renderedItems() {
-      // shortcut: navigation follows rendered rows; load more in the list for distant items.
       return [...document.querySelectorAll('[data-is-entry]')].map(row => ({
         id: row.getAttribute('data-is-entry'), url: row.querySelector('a[data-is-entry-title][href]')?.href
       })).filter(item => item.id && item.url && /^https?:$/.test(new URL(item.url).protocol));
+    }
+    function replenish() {
+      if (opening || paginationPaused || queueRoute !== location.pathname || cursor < 0 || queue.length - cursor - 1 >= 2) return;
+      const root = document.querySelector('[data-focus-container="entryList"]');
+      if (!root) return;
+      const rows = root.querySelectorAll('[data-is-entry]');
+      const tail = rows[rows.length - 1];
+      // Reveal virtual rows before requesting another page; never scroll away during removal.
+      if (tail) {
+        let scroller = tail.parentElement;
+        while (scroller && !/auto|scroll/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+        if (scroller && scroller.clientHeight > 0 && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > 2) {
+          scroller.scrollTop += Math.max(1, scroller.clientHeight / 2);
+          // Offscreen views can defer native scroll events even after scrollTop changes.
+          scroller.dispatchEvent(new Event('scroll'));
+          return;
+        }
+      }
+      const button = [...root.querySelectorAll('button')].find(node => /^(显示更多|加载更多|Show More)$/i.test(node.textContent.trim()));
+      const key = `${queueRoute}\n${queue.at(-1)?.id || ''}`;
+      if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true' ||
+          !button.getClientRects().length || key === paginationKey || Date.now() - lastPageRequest < 2000) return;
+      // One attempt per queue tail: an error or unchanged page must not become a retry loop.
+      paginationKey = key;
+      lastPageRequest = Date.now();
+      button.click();
     }
     function updateNavigation() {
       const sameList = queueRoute === location.pathname;
@@ -18,12 +60,14 @@ if (process.isMainFrame && ['https://www.qireader.com', 'https://www.qireader.co
         for (const item of renderedItems()) if (!ids.has(item.id)) { queue.push(item); ids.add(item.id); }
       }
       const state = {
-        previous: sameList && !opening && cursor > 0, next: sameList && !opening && cursor >= 0 && cursor + 1 < queue.length,
+        previous: sameList && !opening && cursor > 0,
+        next: sameList && !opening && cursor >= 0 && queue.slice(cursor + 1).some(item => readyURLs.has(item.url)),
         route: location.pathname, current: sameList ? queue[cursor]?.url : null,
-        upcoming: sameList && cursor >= 0 ? queue.slice(cursor + 1, cursor + 3).map(item => item.url) : []
+        upcoming: sameList && cursor >= 0 ? queue.slice(cursor + 1, cursor + 65).map(item => item.url) : []
       };
       const serialized = JSON.stringify(state);
       if (serialized !== lastNavigation) { lastNavigation = serialized; ipcRenderer.send('reader:navigation', state); }
+      replenish();
     }
     const style = document.createElement('style');
     style.textContent = '[data-desktop-selected="true"]{outline:2px solid #8563ba!important;outline-offset:-2px;background-color:rgba(133,99,186,.10)!important}';
@@ -67,6 +111,8 @@ if (process.isMainFrame && ['https://www.qireader.com', 'https://www.qireader.co
     async function openItem(item) {
       const { id, url } = item;
       const route = queueRoute;
+      const operation = ++openingSequence;
+      let completing = false;
       opening = true;
       updateNavigation();
       const row = [...document.querySelectorAll('[data-is-entry]')].find(node => node.getAttribute('data-is-entry') === id);
@@ -74,16 +120,22 @@ if (process.isMainFrame && ['https://www.qireader.com', 'https://www.qireader.co
       row?.setAttribute('data-desktop-selected', 'true');
       row?.focus({ preventScroll: true });
       try {
-        const result = await ipcRenderer.invoke('reader:list-article', { route, id, url, trackCompletion: !removed.has(id) });
-        if (result?.ok && !removed.has(id) && /^\/tags\/!readlater\/?$/.test(decodeURI(route)) && location.pathname === route) {
+        const result = await ipcRenderer.invoke('reader:list-article', { route, id, url, trackCompletion: !removed.has(id) && !removing.has(id) });
+        if (result?.ok && !removed.has(id) && !removing.has(id) && /^\/tags\/!readlater\/?$/.test(decodeURI(route)) && location.pathname === route) {
           const current = [...document.querySelectorAll('[data-is-entry]')].find(row => row.getAttribute('data-is-entry') === id);
           if (!current) throw new Error('原文已打开，列表条目已离开视图；未自动移除，请返回列表核对');
-          await removeLater(current, id);
+          removing.add(id); completing = true;
+          const confirmation = removeLater(current, id);
+          opening = false; updateNavigation();
+          await confirmation;
           removed.add(id);
           ipcRenderer.send('reader:completed', id);
         }
       } catch (error) { ipcRenderer.send('reader:error', error.message); }
-      finally { opening = false; updateNavigation(); }
+      finally {
+        if (completing) removing.delete(id);
+        if (operation === openingSequence) { opening = false; updateNavigation(); }
+      }
     }
     function selectFromList(event) {
       if (event.type === 'click' ? event.button !== 0 : !['Enter', 'o'].includes(event.key)) return;
@@ -103,22 +155,31 @@ if (process.isMainFrame && ['https://www.qireader.com', 'https://www.qireader.co
     ipcRenderer.on('reader:navigate', (_event, direction) => {
       if (opening || ![-1, 1].includes(direction) || queueRoute !== location.pathname) return;
       updateNavigation();
-      const index = cursor + direction;
+      let index = cursor + direction;
+      if (direction === 1) {
+        index = queue.findIndex((item, position) => position > cursor && readyURLs.has(item.url));
+        if (index > cursor + 1) queue.splice(cursor + 1, 0, queue.splice(index, 1)[0]);
+        if (index >= 0) index = cursor + 1;
+      }
       if (index < 0 || index >= queue.length) return;
       cursor = index;
       void openItem(queue[cursor]);
+    });
+    ipcRenderer.on('reader:pool', (_event, state) => {
+      readyURLs = new Set(state.ready);
+      updateNavigation();
     });
     window.addEventListener('click', selectFromList, true);
     window.addEventListener('keydown', selectFromList, true);
   window.addEventListener('DOMContentLoaded', () => {
     document.head.append(style);
     new PerformanceObserver(list => {
-      if (opening) return;
       for (const entry of list.getEntries()) {
         const url = new URL(entry.name);
-        if (url.origin !== location.origin || entry.responseStatus < 200 || entry.responseStatus >= 300) continue;
+        if (url.origin === location.origin && url.pathname.startsWith('/api/streams/') && entry.responseStatus >= 400) paginationPaused = true;
+        if (opening || url.origin !== location.origin || entry.responseStatus < 200 || entry.responseStatus >= 300) continue;
         const change = url.pathname.match(/^\/api\/entries\/[^/]+\/([^/]+)\/tags\//);
-        if (change) ipcRenderer.send('reader:progress-changed', { id: decodeURIComponent(change[1]) });
+        if (change && !removing.has(decodeURIComponent(change[1]))) ipcRenderer.send('reader:progress-changed', { id: decodeURIComponent(change[1]) });
         else if (url.pathname === '/api/session') ipcRenderer.send('reader:progress-changed', { session: true });
       }
     }).observe({ type: 'resource' });

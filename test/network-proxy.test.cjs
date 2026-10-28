@@ -105,13 +105,54 @@ test('automatic routing tries only eligible direct connection failures and saves
     'http://printer.local', 'http://foo.localhost', 'http://[::ffff:127.0.0.1]', 'https://u:p@new.test', 'file:///tmp/page']) {
     assert.equal(await service.tryProxy(url, failure, unexpected), false);
   }
-  for (const code of ['ERR_ABORTED', 'ERR_CERT_AUTHORITY_INVALID', 'ERR_FAILED', 'ERR_PROXY_CONNECTION_FAILED', 'HTTP_403', 'HTTP_429']) {
+  for (const code of ['ERR_ABORTED', 'ERR_CERT_AUTHORITY_INVALID', 'ERR_PROXY_CONNECTION_FAILED', 'HTTP_403', 'HTTP_429']) {
     assert.equal(await service.tryProxy('https://other.test', { code }, unexpected), false);
   }
   await service.configure({ ...input, autoLearn: false });
   assert.equal(await service.tryProxy('https://other.test', failure, unexpected), false);
   await service.configure({ ...input, autoLearn: true, mode: 'direct' });
   assert.equal(await service.tryProxy('https://other.test', failure, unexpected), false);
+});
+
+test('generic and protocol load failures retry, while diagnostic logs redact URLs and rotate without blocking reading', async t => {
+  const { service } = fixture(t); await service.ready;
+  await service.configure({ ...input, autoLearn: true });
+  assert.equal(service.retryHost('https://direct.test/article'), 'direct.test');
+  assert.equal(service.retryHost('https://www.v2ex.com/article'), null);
+  assert.equal(service.route('https://direct.test/article'), 'direct');
+  assert.equal(service.route('https://www.v2ex.com/article'), 'proxy');
+  for (const code of ['ERR_FAILED', 'ERR_EMPTY_RESPONSE', 'ERR_SSL_PROTOCOL_ERROR', 'ERR_HTTP2_PROTOCOL_ERROR', 'ERR_QUIC_PROTOCOL_ERROR', 'ERR_TIMED_OUT']) {
+    let called = false;
+    assert.equal(await service.tryProxy('https://direct.test/article?secret=redact', { code }, async () => { called = true; return false; }), false);
+    assert.equal(called, true, code);
+  }
+  service.log('load-start', 'https://user:password@private.test/hidden?token=secret', { route: 'direct', code: 'raw secret', status: 200, page: 12, attempt: 2, elapsedMs: 5001, stage: 'pool' });
+  let lines = fs.readFileSync(service.logFile, 'utf8');
+  for (const secret of ['user:', 'password', '/article', '/hidden', 'token', 'secret', 'redact']) assert.equal(lines.includes(secret), false);
+  const entry = JSON.parse(lines.trim().split('\n').at(-1));
+  assert.equal(entry.host, 'private.test'); assert.equal(entry.status, 200); assert.equal(entry.route, 'direct');
+  assert.equal(entry.page, 12); assert.equal(entry.attempt, 2); assert.equal(entry.elapsedMs, 5001); assert.equal(entry.stage, 'pool');
+  fs.writeFileSync(service.logFile, 'x'.repeat(1024 * 1024));
+  service.log('document-ready', 'https://direct.test');
+  assert.equal(fs.statSync(service.logFile + '.1').size, 1024 * 1024);
+  assert.ok(fs.statSync(service.logFile).size < 1024);
+  fs.unlinkSync(service.logFile); fs.mkdirSync(service.logFile);
+  assert.doesNotThrow(() => service.log('document-ready', 'https://direct.test'));
+});
+
+test('pending proxy trial keeps later hosts eligible without allowing concurrent PAC changes', async t => {
+  const { service } = fixture(t); await service.ready;
+  await service.configure({ ...input, autoLearn: true });
+  let entered, release;
+  const started = new Promise(resolve => { entered = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  const first = service.tryProxy('https://first.test', { code: 'ERR_TIMED_OUT' }, async () => { entered(); return held; });
+  await started;
+  assert.equal(service.retryHost('https://second.test'), 'second.test');
+  assert.equal(await service.tryProxy('https://second.test', { code: 'ERR_TIMED_OUT' }, async () => true), false);
+  release(false); assert.equal(await first, false);
+  assert.equal(service.learning, false);
+  assert.deepEqual(service.summary().domains, ['v2ex.com']);
 });
 
 test('failed proxy loads and failed persistence discard trial rules; failed restoration blocks network', async t => {

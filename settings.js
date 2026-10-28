@@ -1,4 +1,29 @@
 const $ = id => document.getElementById(id);
+const shortcutActions = ['previous', 'next', 'cubox-save'];
+function showShortcuts(info) {
+  for (const action of shortcutActions) $(`shortcut-${action}`).value = info.bindings[action];
+  $('shortcuts-result').textContent = info.error || '';
+  $('save-shortcuts').disabled = false;
+}
+for (const action of shortcutActions) $(`shortcut-${action}`).addEventListener('keydown', event => {
+  if (event.key === 'Tab') return;
+  event.preventDefault();
+  if (event.key === 'Escape') { event.target.blur(); return; }
+  if (event.repeat || event.isComposing || ['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) return;
+  const key = event.code === 'Space' || event.key === ' ' ? 'Space' : event.key.length === 1 ? event.key.toUpperCase() : event.key;
+  event.target.value = ['Backspace', 'Delete'].includes(key) ? '' :
+    [event.ctrlKey && 'Ctrl', event.altKey && 'Alt', event.shiftKey && 'Shift', event.metaKey && 'Meta', key].filter(Boolean).join('+');
+});
+document.querySelectorAll('[data-clear-shortcut]').forEach(button => button.addEventListener('click', () => {
+  $(`shortcut-${button.dataset.clearShortcut}`).value = '';
+}));
+$('shortcuts').addEventListener('submit', async event => {
+  event.preventDefault(); $('save-shortcuts').disabled = true; $('shortcuts-result').classList.remove('success');
+  const result = await request('shortcuts-configure', Object.fromEntries(shortcutActions.map(action => [action, $(`shortcut-${action}`).value])));
+  $('save-shortcuts').disabled = false;
+  if (result.ok) { showShortcuts(result.shortcuts); $('shortcuts-result').classList.add('success'); $('shortcuts-result').textContent = '快捷键已保存并立即生效。'; }
+  else $('shortcuts-result').textContent = result.error;
+});
 let currentProxy;
 function proxyMode() {
   const custom = $('proxy-mode').value === 'custom';
@@ -81,5 +106,5 @@ $('clear').addEventListener('click', async () => {
   else { $('result').classList.remove('success'); $('result').textContent = result.error; }
 });
 request('settings-info').then(result => {
-  if (result.ok) { show(result.info); showGoals(result.goals); showProxy(result.proxy); } else $('result').textContent = result.error;
+  if (result.ok) { show(result.info); showGoals(result.goals); showProxy(result.proxy); showShortcuts(result.shortcuts); } else $('result').textContent = result.error;
 });

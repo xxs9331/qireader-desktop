@@ -43,6 +43,7 @@ splitter.addEventListener('keydown', event => {
 window.desktop.onEndDrag(endDrag);
 window.desktop.onPreview(images => { $('reader-preview').src = images[0]; $('original-preview').src = images[1]; });
 window.desktop.onState(state => {
+  document.querySelector('main p').textContent = state.preparing ? '正在后台准备文章，完成后显示' : '选择文章开始阅读';
   width = state.listWidth;
   side = state.listSide;
   document.body.classList.toggle('list-right', side === 'right');
@@ -65,7 +66,9 @@ window.desktop.onState(state => {
     const info = state.cubox;
     $('cubox-save').textContent = info.busy ? '收藏中' : info.submitted ? '已提交 ✓' : '收藏';
     $('cubox-save').disabled = info.busy || (info.configured && (!info.available || info.submitted));
-    $('cubox-save').title = info.submitted ? '已提交到 Cubox，正文由 Cubox 后台解析' : info.configured ? '收藏当前文章到 Cubox' : '设置 Cubox API 链接';
+    const binding = state.shortcuts?.['cubox-save'];
+    $('cubox-save').title = (info.submitted ? '已提交到 Cubox，正文由 Cubox 后台解析' : info.configured ? '收藏当前文章到 Cubox' : '设置 Cubox API 链接') + (binding ? `（${binding}）` : '');
+    $('cubox-save').setAttribute('aria-keyshortcuts', (binding || '').replace(/\bCtrl\b/g, 'Control'));
   }
   $('error').textContent = state.error || '';
   $('error').title = `${state.error || ''}（点击关闭提示）`;
