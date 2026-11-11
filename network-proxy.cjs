@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { domainToASCII } = require('node:url');
 const { isIP } = require('node:net');
+const { createHash, randomUUID } = require('node:crypto');
 const connectionErrors = new Set(['ERR_NAME_NOT_RESOLVED', 'ERR_CONNECTION_REFUSED', 'ERR_CONNECTION_RESET',
   'ERR_CONNECTION_CLOSED', 'ERR_CONNECTION_TIMED_OUT', 'ERR_TIMED_OUT', 'ERR_ADDRESS_UNREACHABLE',
   'ERR_FAILED', 'ERR_EMPTY_RESPONSE', 'ERR_CONNECTION_ABORTED', 'ERR_SSL_PROTOCOL_ERROR',
@@ -52,14 +53,35 @@ function proxyConfig(value) {
   return { mode: 'pac_script', pacScript: `data:application/x-ns-proxy-autoconfig;base64,${Buffer.from(script).toString('base64')}` };
 }
 
+function logAddress(value) {
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'file:') return { protocol: 'file:', path: '[local]' };
+    if (value === 'about:blank') return { protocol: 'about:', path: 'blank' };
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    // Keep numeric article IDs and common route labels; other path segments may contain secrets.
+    const safe = /^(?:article|articles|question|questions|p|t|post|posts|archives|news|content|read|detail|details|view|index(?:\.html?)?|\d{1,16}(?:\.s?html?)?)$/i;
+    const parts = url.pathname.split('/').slice(0, 17).map(part => !part || safe.test(part) ? part : '[hidden]');
+    return { host: url.hostname, protocol: url.protocol, path: parts.join('/'),
+      urlId: createHash('sha256').update(url.origin + url.pathname + url.search).digest('hex').slice(0, 16) };
+  } catch { return null; }
+}
+
 class NetworkProxy {
-  constructor({ file, sessions }) {
+  constructor({ file, sessions, onRequest = () => {} }) {
     this.file = file; this.sessions = sessions;
     this.logFile = path.join(path.dirname(file), 'network.log');
+    this.run = randomUUID();
+    this.sequence = 0;
     this.config = { mode: 'system', address: '', scope: 'selected', domains: [], autoLearn: false };
     this.active = false; this.busy = false; this.learning = false; this.error = '';
-    for (const ses of sessions) ses.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (_details, callback) => {
-      callback({ cancel: this.busy || !this.active });
+    for (const ses of sessions) ses.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (details, callback) => {
+      const cancel = this.busy || !this.active;
+      if (details.url && (cancel || ['mainFrame', 'subFrame', 'xhr'].includes(details.resourceType))) this.log(cancel ? 'request-blocked' : 'request-start', details.url, {
+        page: details.webContentsId, request: details.id, resource: details.resourceType, method: details.method, route: this.route(details.url)
+      });
+      if (!cancel) { try { onRequest(details); } catch { /* Observation cannot change routing. */ } }
+      callback({ cancel });
     });
     this.ready = this.start();
   }
@@ -85,13 +107,23 @@ class NetworkProxy {
   }
   log(event, url, details = {}) {
     try {
-      const entry = { time: new Date().toISOString(), event, host: new URL(url).hostname };
+      const address = logAddress(url); if (!address) return;
+      const entry = { time: new Date().toISOString(), event, run: this.run, sequence: ++this.sequence, ...address };
       if (/^ERR_[A-Z0-9_]+$/.test(details.code)) entry.code = details.code;
       if (Number.isInteger(details.status)) entry.status = details.status;
       if (['direct', 'proxy', 'system'].includes(details.route)) entry.route = details.route;
-      for (const key of ['page', 'attempt', 'elapsedMs']) if (Number.isSafeInteger(details[key]) && details[key] >= 0) entry[key] = details[key];
+      for (const key of ['page', 'attempt', 'navigation', 'elapsedMs', 'request', 'frame', 'line', 'button']) if (Number.isSafeInteger(details[key]) && details[key] >= 0) entry[key] = details[key];
+      for (const key of ['trusted', 'editable']) if (typeof details[key] === 'boolean') entry[key] = details[key];
+      for (const key of ['pane', 'action', 'resource', 'method', 'signal', 'reason', 'control']) {
+        if (typeof details[key] === 'string' && /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(details[key])) entry[key] = details[key];
+      }
+      if (typeof details.target === 'string' && /^[a-z0-9:/-]{1,160}$/.test(details.target)) entry.target = details.target;
       if (['foreground', 'pool'].includes(details.stage)) entry.stage = details.stage;
-      if (fs.existsSync(this.logFile) && fs.statSync(this.logFile).size >= 1024 * 1024) fs.renameSync(this.logFile, this.logFile + '.1');
+      if (typeof details.afterReady === 'boolean') entry.afterReady = details.afterReady;
+      if (Number.isInteger(details.netError) && details.netError <= 0 && details.netError >= -1000) entry.netError = details.netError;
+      if (/^\d+\.\d+\.\d+$/.test(details.version)) entry.version = details.version;
+      for (const key of ['from', 'requested', 'destination']) { const address = logAddress(details[key]); if (address) entry[key] = address; }
+      if (fs.existsSync(this.logFile) && fs.statSync(this.logFile).size >= 5 * 1024 * 1024) fs.renameSync(this.logFile, this.logFile + '.1');
       fs.appendFileSync(this.logFile, JSON.stringify(entry) + '\n', { mode: 0o600 });
     } catch { /* Logging must not interrupt reading. */ }
   }

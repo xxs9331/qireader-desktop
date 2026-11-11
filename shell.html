@@ -4,12 +4,13 @@
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>QiReader Desktop 0.13.1</title>
+  <title>QiReader Desktop 0.15.0</title>
   <link rel="stylesheet" href="shell.css">
 </head>
 <body>
   <header>
     <div class="toolbar-left">
+    <button id="screening" title="全宽浏览全部订阅源，点击文章加入稍后阅读">筛选订阅</button>
     <button id="toggle-list" title="收起列表" aria-label="收起列表" aria-expanded="true">▾</button>
     <button id="list-side" title="将列表移到右侧">列表置右</button>
     <div class="zoom" id="list-zoom-controls"><span>列表</span><button data-pane="reader" data-zoom="-10" aria-label="缩小列表">−</button><button id="reader-zoom" data-pane="reader" data-zoom="0" title="恢复默认缩放">100%</button><button data-pane="reader" data-zoom="10" aria-label="放大列表">＋</button></div>

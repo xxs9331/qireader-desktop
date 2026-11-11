@@ -9,6 +9,47 @@ const now = +new Date(2026, 9, 28, 12);
 const today = boundaries(now).today;
 const row = (id, crawledAt = today + 1000) => ({ id, crawledAt, status: 1, tagIds: ['later'], timestamp: '9007199254740993999' });
 
+test('screening counts confirmed unique IDs locally and preserves independent reading goals across restart', async t => {
+  const { store, server, options } = setup(t);
+  assert.equal(store.screeningSummary().ready, false);
+  assert.throws(() => store.setScreeningGoal(100));
+  server.entries = [row('later')]; await store.refresh(origin);
+  const calls = server.calls.length, reading = store.summary();
+  store.setScreeningGoal(2);
+  store.saveScreening(store.active, ['a', 'a', 'b']);
+  store.saveScreening(store.active, ['b']);
+  assert.equal(store.screeningSummary().done, 2); assert.equal(store.screeningSummary().reached, true);
+  assert.deepEqual(store.summary(), reading); assert.equal(server.calls.length, calls);
+  const reopened = new ReadingProgress(options);
+  assert.equal(reopened.screeningSummary().ready, false); assert.equal(reopened.screeningSummary().done, 0);
+  await reopened.refresh(origin);
+  assert.equal(reopened.screeningSummary().done, 2); assert.equal(reopened.screeningSummary().total, 2);
+});
+test('screening rolls over by local day and ignores confirmations for a switched account', async t => {
+  const { store, server } = setup(t); await store.refresh(origin);
+  let clock = now; store.now = () => clock;
+  store.setScreeningGoal(7); const alice = store.active;
+  store.saveScreening(alice, ['a']);
+  clock = boundaries(now).tomorrow + 1000;
+  assert.equal(store.screeningSummary().done, 0); assert.equal(store.screeningSummary().total, 7);
+  store.saveScreening(alice, ['a']); assert.equal(store.screeningSummary().done, 1);
+  server.user = 'bob'; await store.refresh(origin);
+  store.saveScreening(alice, ['foreign']);
+  assert.equal(store.screeningSummary().done, 0); assert.equal(store.screeningSummary().total, 100);
+  server.user = 'alice'; await store.refresh(origin);
+  assert.equal(store.screeningSummary().done, 1); assert.equal(store.screeningSummary().total, 7);
+});
+test('invalid screening goals or batches and write failures preserve saved progress', async t => {
+  const { store, options } = setup(t); await store.refresh(origin);
+  store.saveScreening(store.active, ['a']); const before = fs.readFileSync(options.file, 'utf8');
+  for (const target of [0, 10001, 1.5, '100', null]) assert.throws(() => store.setScreeningGoal(target));
+  for (const ids of [[null], [''], ['x'.repeat(513)], Array(5001).fill('a')]) assert.throws(() => store.saveScreening(store.active, ids));
+  assert.equal(fs.readFileSync(options.file, 'utf8'), before);
+  store.file = path.join(path.dirname(options.file), 'missing', 'progress.json');
+  assert.throws(() => store.saveScreening(store.active, ['b']));
+  assert.equal(store.screeningSummary().done, 1);
+});
+
 function setup(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'qireader-progress-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

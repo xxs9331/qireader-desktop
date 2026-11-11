@@ -3,14 +3,22 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createWindow } = require('../main.cjs');
+const screeningFixture = require('./screening-fixture.cjs');
+
+process.on('uncaughtException', error => { console.error(error); app.exit(1); });
 
 app.setPath('userData', process.env.QIREADER_TEST_PROFILE);
+app.setPath('sessionData', app.getPath('userData'));
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('host-resolver-rules', 'MAP *.test 127.0.0.1');
 app.on('window-all-closed', () => {});
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, message) {
-  for (let i = 0; i < 100; i++) { if (await check()) return; await pause(75); }
+  for (let i = 0; i < 100; i++) {
+    try { if (await check()) return; }
+    catch (error) { if (!/Render frame was disposed|Execution context was destroyed/.test(error.message)) throw error; }
+    await pause(75);
+  }
   throw new Error(message);
 }
 const readerHTML = `<!doctype html><meta charset="utf-8"><title>QiReader 测试页面</title>
@@ -50,11 +58,14 @@ window.selectArticle = (id, delay = 0) => {
   const originalRequests = new Map();
   let releaseThird;
   const thirdResponse = new Promise(resolve => { releaseThird = resolve; });
-  const capturedToday = new Date(); capturedToday.setHours(0, 0, 0, 0);
+  let releaseCancelled;
+  const cancelledResponse = new Promise(resolve => { releaseCancelled = resolve; });
+  const capturedToday = new Date(Number(process.env.QIREADER_TEST_DAY) || Date.now()); capturedToday.setHours(0, 0, 0, 0);
   const statsEntries = ['a', 'b', 'c', 'success', 'success-two', 'reject', 'network-fail', 'not-found', 'recycled'].map(id =>
     ({ id, crawledAt: +capturedToday + 1000, timestamp: '9007199254740993999', tagIds: ['later'], status: 1 }));
   statsEntries.push({ id: 'older', crawledAt: +capturedToday - 86400000, timestamp: '9007199254740993998', tagIds: ['later'], status: 1 });
   let statsStatus = 200, streamRequests = 0, nativePages = 0, nativePageStatus = 200;
+  let nativePageEntries = ['page-one', 'page-two', 'page-three'];
   let holdTracking = false, releaseTracking, releaseImage;
   let holdRemoval = false, releaseRemoval;
   const removalResponse = new Promise(resolve => { releaseRemoval = resolve; });
@@ -62,10 +73,14 @@ window.selectArticle = (id, delay = 0) => {
   const imageResponse = new Promise(resolve => { releaseImage = resolve; });
   await browserSession.protocol.handle('https', async request => {
     const url = new URL(request.url);
+    if (url.hostname === 'www.qireader.com' && process.env.QIREADER_TEST_PHASE.startsWith('screening')) {
+      if (url.pathname === '/') return new Response(screeningFixture.html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      const response = await screeningFixture.respond(request); if (response) return response;
+    }
     if (url.hostname === 'www.qireader.com' && url.pathname === '/api/streams/test-pagination') {
       nativePages++;
       await pause(200);
-      return Response.json({ entries: ['page-one', 'page-two', 'page-three'] }, { status: nativePageStatus });
+      return Response.json({ entries: nativePageEntries }, { status: nativePageStatus });
     }
     if (request.method === 'DELETE') {
       const id = url.pathname.split('/').at(-3);
@@ -96,10 +111,12 @@ window.selectArticle = (id, delay = 0) => {
     originalRequests.set(url.pathname, (originalRequests.get(url.pathname) || 0) + 1);
     if (url.pathname === '/slow-image') { await imageResponse; return new Response('', { headers: { 'content-type': 'image/png' } }); }
     if (url.pathname === '/question/pre-three') await thirdResponse;
+    if (url.pathname === '/question/pre-cancel') await cancelledResponse;
     if (url.pathname === '/failure' || url.pathname === '/question/network-fail') return Response.error();
     if (['/question/not-found','/question/pre-fail'].includes(url.pathname)) return new Response('Not found', {status:404});
+    if (url.pathname.startsWith('/question/blocked-')) return new Response('Forbidden', {status:403});
     if (url.pathname === '/question/recycled') await pause(400);
-    return new Response(`<!doctype html><meta charset="utf-8"><title>原文测试</title><style>body{font:20px sans-serif;padding:40px;line-height:1.8}</style><h1>原文 ${url.pathname}</h1><p>独立网页视图 · 模拟知乎原文</p>${url.pathname === '/question/success' ? '<img src="/slow-image">' : ''}<textarea placeholder="评论输入框"></textarea>`, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+    return new Response(`<!doctype html><meta charset="utf-8"><title>原文测试</title><style>body{font:20px sans-serif;padding:40px;line-height:1.8;min-height:4000px}</style><h1>原文 ${url.pathname}</h1><p>独立网页视图 · 模拟知乎原文</p>${url.pathname === '/question/success' ? '<img src="/slow-image">' : ''}<textarea placeholder="评论输入框"></textarea>`, { headers: { 'content-type': 'text/html; charset=utf-8' } });
   });
   const desktop = createWindow();
   let clock = +capturedToday + 12 * 3600000;
@@ -145,9 +162,88 @@ window.selectArticle = (id, delay = 0) => {
   await until(() => !rc.isLoading() && rc.getURL().includes('qireader.com'), 'QiReader fixture failed to load');
   await until(() => shellContents.executeJavaScript('Boolean(window.desktop)'), 'Shell preload missing');
   await until(() => navigationContents.executeJavaScript('Boolean(window.desktop)'), 'Floating navigation preload missing');
-  assert.equal(navigation.getVisible(), false);
+  if (process.env.QIREADER_TEST_PHASE === 'first') assert.equal(navigation.getVisible(), false);
+
+  if (process.env.QIREADER_TEST_PHASE.startsWith('screening')) {
+    await until(() => desktop.progress.screeningSummary().ready, 'Screening account was not verified');
+    if (process.env.QIREADER_TEST_PHASE === 'screening-restart') {
+      assert.equal(desktop.progress.screeningSummary().total, 3); assert.equal(desktop.progress.screeningSummary().done, 1);
+      console.log('PASS: screening target and confirmed daily IDs survive restart independently');
+      win.close(); await until(() => win.isDestroyed(), 'Screening restart window did not close'); app.quit(); return;
+    }
+    const readingBefore = desktop.progress.summary().done;
+    const settings = await openTestSettings();
+    await settings.webContents.executeJavaScript('document.getElementById("screening-target").value="3";document.getElementById("screening-goal").requestSubmit()');
+    await until(() => desktop.progress.screeningSummary().total === 3, 'Screening goal form did not save');
+    settings.close();
+    const requestsBefore = originalRequests.size, scansBefore = streamRequests;
+    await shellContents.executeJavaScript('document.getElementById("screening").click()');
+    try { await until(() => rc.getURL() === 'https://www.qireader.com/' && rc.executeJavaScript('prefs.magazine && prefs.scroll && prefs.lines === 3 && document.getElementById("portal").children.length === 0'), 'Native screening view preferences did not apply'); }
+    catch(error) { console.log('SCREENING SETUP', await rc.executeJavaScript('({url:location.href,prefs:window.prefs,portal:document.getElementById("portal")?.textContent,mode:document.documentElement.className})'), await shellContents.executeJavaScript('document.getElementById("error").textContent'));throw error; }
+    assert.equal(reader.getBounds().width, win.getContentSize()[0]); assert.equal(desktop.original.getVisible(), false);
+    assert.equal(preloaded.size, 0); assert.equal(navigation.getVisible(), false);
+    assert.equal(await shellContents.executeJavaScript('document.getElementById("progress-period").textContent'), '今日筛选');
+    assert.equal(await rc.executeJavaScript('getComputedStyle(document.querySelector(".summary")).webkitLineClamp'), '3');
+    screeningFixture.hold();
+    await rc.executeJavaScript('document.getElementById("items").scrollTop=100;document.getElementById("items").dispatchEvent(new Event("scroll"))');
+    await until(() => screeningFixture.calls.reads.length === 1, 'Native scroll did not issue one read request');
+    assert.equal(desktop.progress.screeningSummary().done, 0, 'Unconfirmed scroll was counted');
+    screeningFixture.release();
+    await until(() => desktop.progress.screeningSummary().done === 1, 'Confirmed native scroll did not update progress');
+    await rc.executeJavaScript('document.getElementById("items").dispatchEvent(new Event("scroll"))');
+    await pause(100); assert.equal(desktop.progress.screeningSummary().done, 1);
+    await rc.executeJavaScript('document.getElementById("items").scrollTop=350;document.getElementById("items").dispatchEvent(new Event("scroll"))');
+    await until(() => screeningFixture.calls.reads.some(body => body.entryIds.includes('screen-b')), 'Failed scroll fixture did not run');
+    await pause(100); assert.equal(desktop.progress.screeningSummary().done, 1, 'Rejected read was counted');
+    await rc.executeJavaScript('document.querySelector(\'[data-is-entry="screen-a"] a\').click()');
+    await until(() => rc.executeJavaScript('document.querySelector(\'[data-is-entry="screen-a"]\').getAttribute("data-desktop-added") === "true"'), 'Click did not save to Read Later');
+    await rc.executeJavaScript('document.querySelector(\'[data-is-entry="screen-a"] a\').click();document.querySelector(\'[data-is-entry="already"] a\').click()');
+    await pause(150); assert.deepEqual(screeningFixture.calls.adds, ['screen-a']); assert.deepEqual(confirmedRemovals, []);
+    await rc.executeJavaScript('document.querySelector(\'[data-is-entry="bad"] a\').click()');
+    await until(() => shellContents.executeJavaScript('document.getElementById("error").textContent.includes("加入稍后阅读未获服务器确认")'), 'Rejected add was not reported');
+    assert.equal(await rc.executeJavaScript('document.querySelector(\'[data-is-entry="bad"]\').hasAttribute("data-desktop-added")'), false);
+    await rc.executeJavaScript('document.querySelector(\'[data-is-entry="bad"] a\').click()');
+    await until(() => rc.executeJavaScript('document.querySelector(\'[data-is-entry="bad"]\').hasAttribute("data-desktop-added")'), 'Explicit retry did not save the rejected item');
+    await rc.executeJavaScript('document.querySelector(\'[data-is-entry="menu-only"] a\').click()');
+    await until(() => rc.executeJavaScript('document.querySelector(\'[data-is-entry="menu-only"]\').hasAttribute("data-desktop-added")'), 'Native context menu did not save the article');
+    await rc.executeJavaScript('document.querySelector(\'[data-is-entry="menu-only"] a\').click()');
+    await pause(150); assert.equal(screeningFixture.calls.adds.filter(id => id === 'menu-only').length, 1);
+    assert.deepEqual(confirmedRemovals, [], 'Repeated context-menu save must not remove an existing bookmark');
+    assert.equal(await rc.executeJavaScript('window.nativeOpened'), false);
+    assert.equal(originalRequests.size, requestsBefore); assert.equal(streamRequests, scansBefore);
+    assert.equal(desktop.progress.summary().done, readingBefore);
+    await shellContents.executeJavaScript('document.getElementById("screening").click()');
+    await until(() => rc.getURL().includes('/tags/'), 'Return to reading did not restore its list');
+    assert.equal(reader.getBounds().width, 280);
+    console.log('PASS: full-width native magazine/3-line/scroll preferences, confirmed daily progress, independent target, idempotent Read Later save, failure/retry, no article preloads or full scans, return to reading');
+    win.close(); await until(() => win.isDestroyed(), 'Screening window did not close'); app.quit(); return;
+  }
+
+  if (process.env.QIREADER_TEST_PHASE === 'resume-off') {
+    await pause(300);
+    assert.equal(originalRequests.size, 0, 'Disabling resume still requested an article');
+    assert.equal(desktop.original.getVisible(), false);
+    assert.equal(reader.getBounds().width, 280);
+    assert.equal(await shellContents.executeJavaScript('!document.getElementById("splitter").hidden'), true);
+    console.log('PASS: disabled startup resume preserves layout and sends no article request');
+    win.close(); await until(() => win.isDestroyed(), 'Resume-off window did not close'); app.quit(); return;
+  }
 
   if (process.env.QIREADER_TEST_PHASE === 'restart') {
+    await until(() => oc().getURL().endsWith('/question/a') && oc().executeJavaScript('Math.abs(scrollY-640)<2'), 'Last article or scroll position was not restored');
+    assert.equal(oc().getZoomFactor(), 1.2);
+    assert.equal(rc.getZoomFactor(), 0.9);
+    assert.equal(desktop.original.getBounds().width, win.getContentSize()[0] - 286);
+    assert.equal(reader.getBounds().x, win.getContentSize()[0] - 280);
+    assert.equal(await shellContents.executeJavaScript('document.getElementById("toggle-list").getAttribute("aria-expanded")'), 'true');
+    assert.deepEqual(confirmedRemovals, []);
+    await until(() => navigationContents.executeJavaScript('!document.getElementById("next").disabled'), 'Restored article did not reconnect navigation');
+    await pressFocusedKey('N');
+    await until(() => oc().getURL().endsWith('/question/b'), 'Next from restored article failed');
+    await pressFocusedKey('Left', ['alt']);
+    await until(() => oc().getURL().endsWith('/question/a') && oc().executeJavaScript('Math.abs(scrollY-640)<2'), 'Revisiting restored article lost position');
+    assert.deepEqual(confirmedRemovals, [], 'Restoring/replaying an article mutated Read Later');
+    console.log('PASS: split side, width, visibility, site/list zoom, article, scroll and navigation survive restart without duplicate completion');
     if (process.platform === 'win32') {
       const settings = await openTestSettings();
       const result = await settings.webContents.executeJavaScript('desktop.request("settings-info")');
@@ -155,9 +251,12 @@ window.selectArticle = (id, delay = 0) => {
       assert.equal(result.info.configured, true);
       assert.ok(!JSON.stringify(result).includes('fake_secret'));
       assert.equal((await settings.webContents.executeJavaScript('desktop.request("cubox-clear")')).ok, true);
+      assert.equal((await settings.webContents.executeJavaScript('desktop.request("scene-configure",{resume:false})')).ok, true);
       settings.close();
       console.log('PASS: Windows encrypted Cubox configuration survives restart and clears locally');
     }
+    await until(() => shellContents.executeJavaScript('document.getElementById("progress-period").textContent === "全部" && document.getElementById("progress-count").textContent.includes("已完成 2 / 10")'), 'Selected progress period or totals lost across restart');
+    await shellContents.executeJavaScript('desktop.command("progress-period")');
     await until(() => shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("已完成 2 / 2") && document.getElementById("progress-count").textContent.includes("已达标")'), 'Daily target or completion dates lost across restart');
     assert.equal(desktop.progress.summary('week').automatic, true);
     assert.equal(desktop.progress.summary('week').target, 7);
@@ -195,7 +294,8 @@ window.selectArticle = (id, delay = 0) => {
   await editGoal('today', false, 2);
   await until(() => shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("0 / 2")'), 'Manual daily goal missing');
   await goalSettings.webContents.executeJavaScript(`document.getElementById('today-target').value=999`);
-  goalSettings.close(); goalSettings = await openTestSettings();
+  goalSettings.close(); await until(() => goalSettings.isDestroyed(), 'Settings did not close');
+  goalSettings = await openTestSettings();
   assert.equal(await goalSettings.webContents.executeJavaScript('document.getElementById("today-target").value'), '2');
   assert.equal(desktop.progress.summary().total, 2);
   assert.equal((await navigationContents.executeJavaScript('desktop.request("goals-configure", {today:{automatic:false,target:999}})')).ok, false);
@@ -263,7 +363,8 @@ window.selectArticle = (id, delay = 0) => {
 
   await rc.executeJavaScript(`history.replaceState({},'', '/tags/reading')`);
   assert.equal(await rc.executeJavaScript('typeof require + "/" + typeof desktop + "/" + typeof process'), 'undefined/undefined/undefined');
-  win.focus(); rc.focus();
+  win.focus(); await until(() => win.isFocused(), 'Reader window did not activate');
+  await pause(100); rc.focus();
   await until(() => win.isFocused() && rc.isFocused(), 'List-selection test did not start in the active reader window');
   await rc.executeJavaScript(`document.querySelector('[data-is-entry-title]').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0}));document.querySelector('[data-is-entry-title]').click()`);
   await until(() => oc().getURL().endsWith('/question/a') && !oc().isLoading(), 'List title did not open original');
@@ -411,12 +512,24 @@ window.selectArticle = (id, delay = 0) => {
   await until(() => oc().getURL().endsWith('/question/page-one') && !oc().isLoading(), 'Hidden list could not navigate into loaded page');
   await pause(2200);
   assert.equal(nativePages, 1, 'Enough queued articles must not request another page');
+  nativePageEntries = ['after-fail-one', 'after-fail-two'];
+  await rc.executeJavaScript(`['blocked-a','blocked-b','blocked-c'].forEach(addRow);document.querySelector('[data-is-entry="page-three"] a').click()`);
+  await until(() => nativePages === 2 && preloaded.get('https://www.zhihu.com/question/after-fail-one')?.ready, 'Failed successors blocked loading a later native page');
   nativePageStatus = 429;
-  await rc.executeJavaScript('document.querySelector(\'[data-is-entry="page-three"] a\').click()');
-  await until(() => nativePages === 2, 'Queue tail did not request another page');
+  await until(() => ['blocked-a','blocked-b','blocked-c'].every(id => originalRequests.get('/question/' + id) === 1), 'Failed preparation did not advance through all blocked articles');
+  assert.equal(await rc.executeJavaScript('document.querySelectorAll(\'[data-is-entry^="blocked-"]\').length'), 3, 'Failed articles must stay in the list');
+  await until(() => navigationContents.executeJavaScript('!document.getElementById("next").disabled'), 'Next did not recover after loading past failed articles');
+  await navigationContents.executeJavaScript('document.getElementById("next").click()');
+  await until(() => oc().getURL().endsWith('/question/after-fail-one'), 'Next did not skip failed articles for the newly loaded page');
+  assert.ok(preloaded.size <= 2);
+  assert.deepEqual(confirmedRemovals, []);
+  console.log('PASS: consecutive HTTP 403 articles retain their rows, do not retry, replenish native pages and recover ready-next navigation');
+  await rc.executeJavaScript('document.querySelector(\'[data-is-entry="after-fail-two"] a\').click()');
+  await until(() => nativePages === 3, 'Queue tail did not request another page');
   await pause(2400);
-  assert.equal(nativePages, 2, 'HTTP 429 must not trigger automatic retries');
-  await rc.executeJavaScript(`document.getElementById('native-more').remove();document.querySelectorAll('[data-is-entry^="page-"]').forEach(row=>row.remove())`);
+  assert.equal(nativePages, 3, 'HTTP 429 must not trigger automatic retries');
+  for (const id of ['blocked-a','blocked-b','blocked-c']) assert.equal(originalRequests.get('/question/' + id), 1, 'Failed background pages must not automatically retry');
+  await rc.executeJavaScript(`document.getElementById('native-more').remove();document.querySelectorAll('[data-is-entry^="page-"],[data-is-entry^="blocked-"],[data-is-entry^="after-fail-"]').forEach(row=>row.remove())`);
   await shellContents.executeJavaScript('desktop.command("toggle-list")');
   console.log('PASS: near-tail native pagination while hidden, ordered next/prefetch, no unnecessary requests or rate-limit retry loop');
 
@@ -474,6 +587,13 @@ window.selectArticle = (id, delay = 0) => {
   const stalePages = [...preloaded.values()].map(page => page.view.webContents);
   await rc.executeJavaScript(`history.pushState({},'', '/tags/other')`);
   await until(() => preloaded.size === 0 && stalePages.every(contents => contents.isDestroyed()), 'Changed list retained old preloads');
+  await rc.executeJavaScript(`history.pushState({},'', '/tags/reading');addRow('pre-cancel');document.querySelector('[data-is-entry="pre-four"] a').click()`);
+  await until(() => preloaded.get(warmURL('pre-cancel'))?.view.webContents.isLoading(), 'Cancellation fixture did not start preparing');
+  const cancelledContents = preloaded.get(warmURL('pre-cancel')).view.webContents;
+  await rc.executeJavaScript(`history.pushState({},'', '/tags/other')`);
+  await until(() => preloaded.size === 0 && cancelledContents.isDestroyed(), 'An unfinished preparation survived the list change');
+  releaseCancelled();
+  await pause(100);
   await rc.executeJavaScript(`history.pushState({},'', '/tags/reading');document.querySelectorAll('[data-is-entry^="pre-"]').forEach(row=>row.remove())`);
   console.log('PASS: two-page bound, ready-first reorder and deferred reuse, muted sandbox, failed-view release/retry, stale-list cleanup; no early completion');
 
@@ -578,6 +698,7 @@ window.selectArticle = (id, delay = 0) => {
   const popup = await created;
   await until(() => !popup.webContents.isLoading(), 'Popup did not load');
   assert.equal(popup.webContents.session, browserSession);
+  assert.equal(popup.getParentWindow(), win);
   assert.equal(await popup.webContents.executeJavaScript('typeof require + "/" + typeof desktop'), 'undefined/undefined');
   await until(() => popup.isFocused(), 'Login popup did not retain focus');
   popup.close();
@@ -730,10 +851,31 @@ window.selectArticle = (id, delay = 0) => {
     assert.ok(rightWindow && !rightWindow.thumbnail.isEmpty());
     fs.writeFileSync(path.join(artifactDir, 'smoke-win32-right.png'), rightWindow.thumbnail.toPNG());
   }
-  const articleContents = [oc(), ...[...preloaded.values()].map(page => page.view.webContents)];
   const persistedKeyboard = await openTestSettings();
   assert.equal((await persistedKeyboard.webContents.executeJavaScript(`desktop.request('shortcuts-configure',{previous:'Alt+ArrowLeft',next:'N','cubox-save':'S'})`)).ok, true);
+  assert.equal(await persistedKeyboard.webContents.executeJavaScript('document.getElementById("list-mode") === null'), true);
+  await persistedKeyboard.webContents.executeJavaScript('document.getElementById("reading-layout").requestSubmit()');
+  await until(() => persistedKeyboard.webContents.executeJavaScript('document.getElementById("scene-result").textContent.includes("已保存")'), 'Reading scene form did not save');
   persistedKeyboard.close();
+  assert.equal(desktop.original.getBounds().width, win.getContentSize()[0] - 286);
+  const previousSceneContents = oc();
+  await rc.executeJavaScript('document.querySelector(\'[data-is-entry="a"] a\').click()');
+  await until(() => oc() !== previousSceneContents && oc().getURL().endsWith('/question/a') && !oc().isLoading(), 'Reading position fixture did not select article A');
+  await until(() => webContents.getFocusedWebContents() === oc() && oc().executeJavaScript('document.hasFocus() && document.visibilityState === "visible"'), 'Reading position fixture did not become foreground');
+  await shellContents.executeJavaScript('desktop.command("zoom",{pane:"original",change:10});desktop.command("zoom",{pane:"original",change:10});desktop.command("zoom",{pane:"reader",change:-10})');
+  await until(() => oc().getZoomFactor() === 1.2 && rc.getZoomFactor() === 0.9, 'Scene zoom fixture did not apply');
+  await oc().executeJavaScript('window.scrollTo(0,640)');
+  const sceneFile = path.join(app.getPath('userData'), 'reading-scene.json');
+  await until(() => JSON.parse(fs.readFileSync(sceneFile,'utf8')).pages.some(page => page.url.endsWith('/question/a') && page.y === 640), 'Scroll position was not saved');
+  await rc.executeJavaScript('document.querySelector(\'[data-is-entry="b"] a\').click()');
+  await until(() => oc().getURL().endsWith('/question/b'), 'Article selection failed');
+  await until(() => navigationContents.executeJavaScript('!document.getElementById("previous").disabled'), 'Article B selection did not finish');
+  assert.equal(oc().getZoomFactor(), 1.2);
+  assert.equal(reader.getBounds().x, win.getContentSize()[0] - 280, 'Selection auto-closed the list');
+  await rc.executeJavaScript('document.querySelector(\'[data-is-entry="a"] a\').click()');
+  await until(() => oc().getURL().endsWith('/question/a') && oc().executeJavaScript('Math.abs(scrollY-640)<2'), 'Reopening an article lost its scroll position');
+  console.log('PASS: drawer controls removed; split selection stays open and local positions/site zoom restore');
+  const articleContents = [oc(), ...[...preloaded.values()].map(page => page.view.webContents)];
   win.close();
   await until(() => rc.isDestroyed() && articleContents.every(contents => contents.isDestroyed()) && navigationContents.isDestroyed(), 'Views leaked after window close');
   console.log('PASS: window close releases both remote views');

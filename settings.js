@@ -1,4 +1,32 @@
 const $ = id => document.getElementById(id);
+$('export-logs').addEventListener('click', async () => {
+  $('export-logs').disabled = true;
+  const result = await request('logs-export');
+  $('export-logs').disabled = false;
+  $('logs-result').textContent = result.ok ? result.canceled ? '已取消导出。' : '调试日志已导出。' : result.error;
+});
+function showScreening(info) {
+  $('screening-target').value = info.total; $('save-screening').disabled = !info.ready;
+  $('screening-result').textContent = info.error || (info.ready ? '' : '登录并等待账号识别后即可设置目标。');
+}
+$('screening-goal').addEventListener('submit', async event => {
+  event.preventDefault(); $('save-screening').disabled = true;
+  const result = await request('screening-goal', Number($('screening-target').value));
+  $('save-screening').disabled = false;
+  if (result.ok) { showScreening(result.screening); $('screening-result').textContent = '筛选目标已保存。'; }
+  else $('screening-result').textContent = result.error;
+});
+function showScene(info) {
+  $('resume-reading').checked = info.resume;
+  $('scene-result').textContent = info.error || ''; $('save-scene').disabled = false;
+}
+$('reading-layout').addEventListener('submit', async event => {
+  event.preventDefault(); $('save-scene').disabled = true; $('scene-result').classList.remove('success');
+  const result = await request('scene-configure', { resume: $('resume-reading').checked });
+  $('save-scene').disabled = false;
+  if (result.ok) { showScene(result.scene); $('scene-result').classList.add('success'); $('scene-result').textContent = '阅读设置已保存并立即生效。'; }
+  else $('scene-result').textContent = result.error;
+});
 const shortcutActions = ['previous', 'next', 'cubox-save'];
 function showShortcuts(info) {
   for (const action of shortcutActions) $(`shortcut-${action}`).value = info.bindings[action];
@@ -106,5 +134,5 @@ $('clear').addEventListener('click', async () => {
   else { $('result').classList.remove('success'); $('result').textContent = result.error; }
 });
 request('settings-info').then(result => {
-  if (result.ok) { show(result.info); showGoals(result.goals); showProxy(result.proxy); showShortcuts(result.shortcuts); } else $('result').textContent = result.error;
+  if (result.ok) { show(result.info); showGoals(result.goals); showProxy(result.proxy); showShortcuts(result.shortcuts); showScene(result.scene); showScreening(result.screening); } else $('result').textContent = result.error;
 });

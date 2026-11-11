@@ -20,6 +20,11 @@ module.exports = async function proxyChecks(desktop, configure) {
   const trialResponse = new Promise(resolve => { releaseTrial = resolve; });
   const direct = http.createServer((request, response) => {
     directRequests++; if (request.url === '/not-found') response.statusCode = 404;
+    if (request.url === '/article/100.html') {
+      response.writeHead(302, { location: '/article/101.html?token=secret' }); response.end(); return;
+    }
+    if (request.url.startsWith('/article/404.html')) response.statusCode = 404;
+    if (request.url.startsWith('/article/403.html')) response.statusCode = 403;
     directPaths.set(request.url, (directPaths.get(request.url) || 0) + 1);
     if (['/stall', '/slow-document', '/minute'].includes(request.url)) {
       response.writeHead(200, { 'content-type': 'text/html' });
@@ -191,9 +196,33 @@ module.exports = async function proxyChecks(desktop, configure) {
     assert.equal(desktop.networkProxy.summary().domains.some(host => host.startsWith('minute')), false, 'Expired trial must never save a domain');
     assert.ok(forwarded.filter(url => url.endsWith('/minute')).length <= 2, 'Each article may try the proxy only once');
     const trials = readLogs()
-      .filter(entry => entry.host.startsWith('minute') && entry.event === 'proxy-trial');
+      .filter(entry => entry.host?.startsWith('minute') && entry.event === 'proxy-trial');
     if (trials.length === 2) assert.ok(Date.parse(trials[1].time) - Date.parse(trials[0].time) >= 54000, 'Proxy trials must not overlap');
     console.log('PASS: real 60-second total budget includes serialized proxy wait; both slots released, current article retained, no failed rules saved');
+    }
+    if (process.env.QIREADER_TEST_PHASE === 'first') {
+      await until(() => desktop.navigationContents.executeJavaScript('!document.getElementById("previous").disabled'), 'Previous selection did not finish before logging regression');
+      await choose('audit-chain', `http://audit.test:${directPort}/article/100.html`);
+      await until(() => desktop.original.webContents.getURL().includes('/article/101.html'), 'HTTP redirect did not promote the final article');
+      await until(() => readLogs().some(entry => entry.host === 'audit.test' && entry.event === 'pool-promote'), 'Promoted article was not logged');
+      const contents = desktop.original.webContents, id = contents.id;
+      await contents.executeJavaScript('location.assign("/article/404.html?token=secret")');
+      await until(() => readLogs().some(entry => entry.page === id && entry.event === 'response' && entry.status === 404), 'Late foreground 404 was not logged');
+      await until(() => !contents.isLoading(), 'Late navigation did not finish');
+      await contents.executeJavaScript('location.assign("/article/403.html?token=secret")');
+      await until(() => readLogs().some(entry => entry.page === id && entry.event === 'response' && entry.status === 403), 'Late foreground 403 was not logged');
+      const entries = readLogs().filter(entry => entry.host === 'audit.test' && entry.page === id);
+      const redirect = entries.find(entry => entry.event === 'navigation-redirect');
+      assert.equal(redirect.from.path, '/article/100.html'); assert.equal(redirect.path, '/article/101.html');
+      const success = entries.find(entry => entry.event === 'response' && entry.status === 200);
+      const failure = entries.find(entry => entry.event === 'response' && entry.status === 404);
+      assert.equal(failure.path, '/article/404.html'); assert.equal(failure.stage, 'foreground'); assert.equal(failure.afterReady, true);
+      assert.equal(failure.requested.path, '/article/100.html'); assert.ok(failure.navigation > success.navigation);
+      assert.equal(failure.run, success.run); assert.equal(failure.attempt, success.attempt);
+      assert.ok(entries.some(entry => entry.event === 'navigation-start' && entry.from.path === '/article/101.html' && entry.path === '/article/404.html'));
+      assert.ok(entries.some(entry => entry.event === 'navigation-finished' && entry.status === 404));
+      assert.equal(JSON.stringify(entries).includes('token'), false); assert.equal(JSON.stringify(entries).includes('secret'), false);
+      console.log('PASS: redacted HTTP redirect chain, initial article, stable run/page/load IDs and late foreground 200-to-404/403 navigations are logged');
     }
     await configure({ ...input, address: `socks5://127.0.0.1:${socksPort}` });
     assert.equal(await (await browserSession.fetch('http://proxied.test/socks', { cache: 'no-store', signal: AbortSignal.timeout(3000) })).text(), 'socks');

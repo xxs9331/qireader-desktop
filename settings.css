@@ -24,6 +24,6 @@ input, select, textarea { width: 100%; padding: 9px; border: 1px solid #ddd; bor
 textarea { resize: vertical; }
 .actions { display: flex; justify-content: flex-end; gap: 8px; }
 #clear { margin-right: auto; }
-#save, #save-goals, #save-proxy, #save-shortcuts { color: #fff; background: #80609f; }
-#result, #goals-result, #proxy-result, #shortcuts-result { min-height: 20px; color: #ac3131; }
-#result.success, #goals-result.success, #proxy-result.success, #shortcuts-result.success { color: #466e43; }
+#save, #save-goals, #save-proxy, #save-shortcuts, #save-scene { color: #fff; background: #80609f; }
+#result, #goals-result, #proxy-result, #shortcuts-result, #scene-result { min-height: 20px; color: #ac3131; }
+#result.success, #goals-result.success, #proxy-result.success, #shortcuts-result.success, #scene-result.success { color: #466e43; }

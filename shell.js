@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-for (const action of ['toggle-list', 'list-side', 'external', 'cubox-save', 'settings']) $(action).addEventListener('click', () => window.desktop.command(action));
+for (const action of ['screening', 'toggle-list', 'list-side', 'external', 'cubox-save', 'settings']) $(action).addEventListener('click', () => window.desktop.command(action));
 for (const [id, action] of [['progress-period', 'progress-period'], ['progress-count', 'progress-refresh'], ['progress-older', 'progress-older']]) {
   $(id).addEventListener('click', () => window.desktop.command(action));
 }
@@ -43,6 +43,11 @@ splitter.addEventListener('keydown', event => {
 window.desktop.onEndDrag(endDrag);
 window.desktop.onPreview(images => { $('reader-preview').src = images[0]; $('original-preview').src = images[1]; });
 window.desktop.onState(state => {
+  document.body.classList.toggle('screening-mode', Boolean(state.screening));
+  $('screening').textContent = state.screening ? '返回阅读' : '筛选订阅';
+  $('screening').setAttribute('aria-pressed', String(Boolean(state.screening)));
+  for (const id of ['toggle-list', 'list-side', 'external', 'cubox-save']) $(id).hidden = Boolean(state.screening);
+  document.querySelector('.original-zoom').hidden = Boolean(state.screening);
   document.querySelector('main p').textContent = state.preparing ? '正在后台准备文章，完成后显示' : '选择文章开始阅读';
   width = state.listWidth;
   side = state.listSide;
@@ -51,17 +56,18 @@ window.desktop.onState(state => {
   $('list-side').title = side === 'left' ? '将列表移到右侧' : '将列表移到左侧';
   document.documentElement.style.setProperty('--list-width', `${width}px`);
   document.body.classList.toggle('previewing', Boolean(state.dragging));
-  splitter.hidden = state.listHidden;
+  splitter.hidden = state.listHidden || state.screening;
   splitter.setAttribute('aria-valuenow', width);
   splitter.setAttribute('aria-valuemax', innerWidth - 360);
   $('toggle-list').textContent = state.listHidden ? '▸' : '▾';
   $('toggle-list').title = state.listHidden ? '展开列表' : '收起列表';
   $('toggle-list').setAttribute('aria-label', $('toggle-list').title);
   $('toggle-list').setAttribute('aria-expanded', String(!state.listHidden));
-  $('list-zoom-controls').hidden = state.listHidden;
+  $('list-zoom-controls').hidden = state.listHidden && !state.screening;
   $('reader-zoom').textContent = `${state.readerZoom}%`;
   $('original-zoom').textContent = `${state.originalZoom}%`;
-  $('external').disabled = !state.url;
+  $('external').disabled = !(state.failedURL || state.url);
+  $('external').title = state.failedURL ? '在浏览器打开本次加载失败的文章' : '在浏览器打开当前文章';
   if (state.cubox) {
     const info = state.cubox;
     $('cubox-save').textContent = info.busy ? '收藏中' : info.submitted ? '已提交 ✓' : '收藏';
@@ -76,6 +82,21 @@ window.desktop.onState(state => {
   $('reading-status').hidden = Boolean(state.error);
   const stats = state.progress;
   if (stats) {
+    if (state.screening) {
+      $('progress-period').textContent = '今日筛选'; $('progress-period').disabled = true;
+      $('progress-count').textContent = stats.ready ? `已筛选 ${stats.done} / ${stats.total} · ${stats.reached ? '已达标 ✓' : `还需 ${stats.remaining}`}` : '等待账号识别';
+      $('progress-count').disabled = false;
+      $('progress-count').title = '滚动或手动标记已读经服务器确认后累计，每篇每天只计一次；点击同步账号，目标在设置中修改。';
+      if (stats.error) { $('progress-count').textContent += ' · 待同步'; $('progress-count').title += '\n' + stats.error; }
+      $('progress-older').hidden = true;
+      $('reading-progress').max = stats.total; $('reading-progress').value = Math.min(stats.done, stats.total);
+      $('reading-progress').setAttribute('aria-label', '今日订阅筛选进度');
+      $('reading-progress').setAttribute('aria-valuetext', $('progress-count').textContent);
+      $('reading-status').classList.toggle('stale', Boolean(stats.error));
+      return;
+    }
+    $('progress-period').disabled = false;
+    $('reading-progress').setAttribute('aria-label', '稍后阅读完成进度');
     $('progress-period').textContent = { today: '今日', week: '本周', all: '全部' }[state.progressPeriod];
     $('reading-status').classList.toggle('stale', Boolean(stats.error));
     const result = stats.automatic ? (stats.total === 0 ? '暂无文章' : stats.remaining ? `剩余 ${stats.remaining}` : '已全部看完') : stats.reached ? '已达标 ✓' : `还需 ${stats.remaining}`;

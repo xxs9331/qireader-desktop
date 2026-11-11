@@ -17,6 +17,11 @@ function validEntry(entry) {
 function validGoal(goal) {
   return goal && typeof goal.automatic === 'boolean' && Number.isInteger(goal.target) && goal.target >= 1 && goal.target <= 10000;
 }
+function validScreening(value) {
+  return !value || Number.isInteger(value.target) && value.target >= 1 && value.target <= 10000 &&
+    Number.isSafeInteger(value.day) && value.day >= 0 && Array.isArray(value.ids) && value.ids.length <= 50000 &&
+    value.ids.every(id => typeof id === 'string' && id.length > 0 && id.length <= 512);
+}
 
 class ReadingProgress {
   constructor({ file, fetch, onChange = () => {}, now = Date.now }) {
@@ -27,7 +32,7 @@ class ReadingProgress {
     try {
       const data = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (data.version !== 1 || !data.accounts || typeof data.accounts !== 'object' || Array.isArray(data.accounts) ||
-          !Object.values(data.accounts).every(account => Number.isFinite(account.startedAt) && Number.isFinite(account.updatedAt) &&
+          !Object.values(data.accounts).every(account => Number.isFinite(account.startedAt) && Number.isFinite(account.updatedAt) && validScreening(account.screening) &&
             (!account.goals || ['today', 'week'].every(period => !account.goals[period] || validGoal(account.goals[period]))) &&
             Array.isArray(account.entries) && account.entries.every(entry => validEntry(entry) && typeof entry.done === 'boolean' &&
               (entry.completedAt === undefined || (Number.isSafeInteger(entry.completedAt) && entry.completedAt > 0))))) {
@@ -127,6 +132,30 @@ class ReadingProgress {
         [period, { automatic: goal.automatic, target: goal.target }])) }
     } } });
     this.onChange();
+  }
+  screeningSummary() {
+    const value = this.data.accounts[this.active]?.screening;
+    const done = value?.day === boundaries(this.now()).today ? new Set(value.ids).size : 0;
+    const total = value?.target || 100;
+    return { ready: Boolean(this.active) && !this.storageError, done, total, remaining: Math.max(0, total - done),
+      error: this.screeningError || this.storageError || '', reached: done >= total };
+  }
+  setScreeningGoal(target) {
+    if (!Number.isInteger(target) || target < 1 || target > 10000) throw Error('筛选目标须为 1–10000 的整数');
+    if (!this.active) throw Error('请登录并等待账号识别后设置目标');
+    this.saveScreening(this.active, [], this.now(), target);
+  }
+  saveScreening(key, ids, confirmedAt = this.now(), target) {
+    if (!key || key !== this.active) return;
+    if (!Array.isArray(ids) || ids.length > 5000 || ids.some(id => typeof id !== 'string' || !id || id.length > 512)) throw Error('筛选记录无效');
+    const previous = this.data.accounts[key] || { startedAt: this.now(), updatedAt: 0, entries: [] };
+    const day = boundaries(confirmedAt).today, value = previous.screening;
+    const next = [...new Set([...(value?.day === day ? value.ids : []), ...ids])];
+    if (next.length > 50000) throw Error('今日筛选记录已满，原有记录已保留');
+    this.persist({ ...this.data, accounts: { ...this.data.accounts, [key]: { ...previous,
+      screening: { target: target ?? value?.target ?? 100, day, ids: next }
+    } } });
+    this.screeningError = ''; this.onChange();
   }
   async sync(origin, { manual = false } = {}) {
     if (this.syncing || this.loading) return;

@@ -6,7 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { NetworkProxy, settings, proxyConfig } = require('../network-proxy.cjs');
 const input = { mode: 'custom', address: 'http://127.0.0.1:7890', scope: 'selected', domains: 'v2ex.com\n*.v2ex.com' };
-function fixture(t) {
+function fixture(t, options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qireader-proxy-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const sessions = Array.from({ length: 2 }, () => ({
@@ -16,8 +16,21 @@ function fixture(t) {
     async closeAllConnections() { this.closed++; }
   }));
   const file = path.join(dir, 'proxy-settings.json');
-  return { sessions, file, service: new NetworkProxy({ file, sessions }) };
+  return { sessions, file, service: new NetworkProxy({ file, sessions, ...options }) };
 }
+test('request observation cannot bypass routing protection or fail an allowed request', async t => {
+  const seen = [];
+  const { sessions, service } = fixture(t, { onRequest: request => { seen.push(request.id); throw Error('observer failure'); } });
+  let cancelled;
+  sessions[0].webRequest.handler({ id: 1 }, value => { cancelled = value.cancel; });
+  assert.equal(cancelled, true); assert.deepEqual(seen, []);
+  await service.ready;
+  sessions[0].webRequest.handler({ id: 2 }, value => { cancelled = value.cancel; });
+  assert.equal(cancelled, false); assert.deepEqual(seen, [2]);
+  service.busy = true;
+  sessions[0].webRequest.handler({ id: 3 }, value => { cancelled = value.cancel; });
+  assert.equal(cancelled, true); assert.deepEqual(seen, [2]);
+});
 test('proxy input validates protocols, ports, domain boundaries and rejects credentials or executable PAC input', () => {
   assert.deepEqual(settings(input).domains, ['v2ex.com']);
   assert.equal(settings({ ...input, address: 'socks5://[::1]:1080' }).address, 'socks5://[::1]:1080');
@@ -128,13 +141,33 @@ test('generic and protocol load failures retry, while diagnostic logs redact URL
   }
   service.log('load-start', 'https://user:password@private.test/hidden?token=secret', { route: 'direct', code: 'raw secret', status: 200, page: 12, attempt: 2, elapsedMs: 5001, stage: 'pool' });
   let lines = fs.readFileSync(service.logFile, 'utf8');
-  for (const secret of ['user:', 'password', '/article', '/hidden', 'token', 'secret', 'redact']) assert.equal(lines.includes(secret), false);
+  for (const secret of ['user:', 'password', '/hidden', 'token', 'secret', 'redact']) assert.equal(lines.includes(secret), false);
   const entry = JSON.parse(lines.trim().split('\n').at(-1));
   assert.equal(entry.host, 'private.test'); assert.equal(entry.status, 200); assert.equal(entry.route, 'direct');
   assert.equal(entry.page, 12); assert.equal(entry.attempt, 2); assert.equal(entry.elapsedMs, 5001); assert.equal(entry.stage, 'pool');
-  fs.writeFileSync(service.logFile, 'x'.repeat(1024 * 1024));
+  assert.equal(entry.path, '/[hidden]'); assert.equal(entry.protocol, 'https:');
+  assert.match(entry.run, /^[0-9a-f-]{36}$/); assert.match(entry.urlId, /^[0-9a-f]{16}$/);
+  service.log('response', 'https://www.huxiu.com/article/4896615.html?token=secret#secret', {
+    status: 404, navigation: 2, afterReady: true,
+    from: 'https://user:password@www.huxiu.com/article/123.html?token=secret',
+    requested: 'https://www.huxiu.com/article/123.html?token=secret', ignored: 'secret', netError: -105
+  });
+  const failure = JSON.parse(fs.readFileSync(service.logFile, 'utf8').trim().split('\n').at(-1));
+  assert.equal(failure.path, '/article/4896615.html'); assert.equal(failure.navigation, 2); assert.equal(failure.afterReady, true);
+  assert.equal(failure.run, entry.run); assert.equal(failure.netError, -105);
+  assert.equal(failure.from.path, '/article/123.html'); assert.equal(failure.from.urlId, failure.requested.urlId);
+  assert.notEqual(failure.urlId, failure.requested.urlId);
+  for (const secret of ['secret', 'token', 'password', 'user:', '#', '?', 'ignored']) assert.equal(JSON.stringify(failure).includes(secret), false);
+  service.log('navigation-start', 'https://private.test/reset/secret@example.com/ABCDEF1234567890?key=secret', { from: 'file:///secret' });
+  const hidden = JSON.parse(fs.readFileSync(service.logFile, 'utf8').trim().split('\n').at(-1));
+  assert.equal(hidden.path, '/[hidden]/[hidden]/[hidden]'); assert.equal(hidden.from.path, '[local]');
+  assert.equal(JSON.stringify(hidden).includes('secret'), false);
+  const length = fs.statSync(service.logFile).size;
+  service.log('response', 'invalid');
+  assert.equal(fs.statSync(service.logFile).size, length);
+  fs.writeFileSync(service.logFile, 'x'.repeat(5 * 1024 * 1024));
   service.log('document-ready', 'https://direct.test');
-  assert.equal(fs.statSync(service.logFile + '.1').size, 1024 * 1024);
+  assert.equal(fs.statSync(service.logFile + '.1').size, 5 * 1024 * 1024);
   assert.ok(fs.statSync(service.logFile).size < 1024);
   fs.unlinkSync(service.logFile); fs.mkdirSync(service.logFile);
   assert.doesNotThrow(() => service.log('document-ready', 'https://direct.test'));

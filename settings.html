@@ -9,6 +9,26 @@
 </head>
 <body>
   <h1>设置</h1>
+  <section aria-labelledby="screening-heading">
+  <h2 id="screening-heading">订阅筛选目标</h2>
+  <form id="screening-goal">
+    <label for="screening-target">每日筛选篇数</label>
+    <input id="screening-target" type="number" min="1" max="10000" required value="100">
+    <p>筛选订阅时，滚动或手动标记已读经服务器确认后计数，每篇每天一次；点击文章加入稍后阅读。与稍后阅读的阅读目标分别统计，每天按本机日期重置，账号之间独立保存。</p>
+    <p id="screening-result" role="status" aria-live="polite"></p>
+    <div class="actions"><button id="save-screening" type="submit" disabled>保存筛选目标</button></div>
+  </form>
+  </section>
+  <section aria-labelledby="reading-layout-heading">
+  <h2 id="reading-layout-heading">阅读现场</h2>
+  <form id="reading-layout">
+    <label class="automatic"><input id="resume-reading" type="checkbox" checked>启动时恢复上次文章与阅读位置</label>
+    <p>列表左右、宽度、展开状态、统计周期和字号自动保存，原文字号按站点记忆。</p>
+    <p>最近文章链接及滚动位置仅保存在本机，最多保留 100 篇；恢复文章不再次移出稍后阅读或计完成。网页仍需联网加载。</p>
+    <p id="scene-result" role="status" aria-live="polite"></p>
+    <div class="actions"><button id="save-scene" type="submit" disabled>保存阅读设置</button></div>
+  </form>
+  </section>
   <section aria-labelledby="shortcuts-heading">
   <h2 id="shortcuts-heading">阅读快捷键</h2>
   <form id="shortcuts">
@@ -70,6 +90,12 @@
     <p id="result" role="status" aria-live="polite"></p>
     <div class="actions"><button id="clear" type="button" title="仅清除本机 API 配置，不删除 Cubox 收藏">清除本机配置</button><button id="save" type="submit">保存收藏设置</button></div>
   </form>
+  </section>
+  <section aria-labelledby="diagnostics-heading">
+    <h2 id="diagnostics-heading">调试日志</h2>
+    <p>自动记录本软件各页面、点击、快捷键、网络错误和疑似验证码。仅保存在本机；不记录输入值、Cookie、正文或完整网址。最近两份日志合计约 10 MiB，超出覆盖旧记录。导出前请检查域名和访问时间等个人信息。</p>
+    <button id="export-logs" type="button">导出调试日志</button>
+    <p id="logs-result" role="status" aria-live="polite"></p>
   </section>
   <footer><button id="close" type="button">关闭</button></footer>
   <script src="settings.js"></script>

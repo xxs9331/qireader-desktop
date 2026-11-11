@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][string]$RuntimeZip, [ValidateSet('first', 'restart', 'budget')][string[]]$Phases = @('first', 'restart', 'budget'))
+param([Parameter(Mandatory = $true)][string]$RuntimeZip, [ValidateSet('first', 'restart', 'resume-off', 'budget', 'screening', 'screening-restart', 'diagnostics')][string[]]$Phases = @('first', 'restart', 'resume-off', 'budget', 'screening', 'screening-restart', 'diagnostics'))
 $ErrorActionPreference = 'Stop'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('qireader-smoke-' + [guid]::NewGuid().ToString('N'))
 $runtime = Join-Path $testRoot 'runtime'
@@ -8,7 +8,9 @@ try {
     New-Item -ItemType Directory -Path $profile -Force | Out-Null
     Expand-Archive -LiteralPath $RuntimeZip -DestinationPath $runtime
     $env:QIREADER_TEST_PROFILE = $profile
+    $env:QIREADER_TEST_DAY = [DateTimeOffset]::Now.ToUnixTimeMilliseconds().ToString()
     foreach ($phase in $Phases) {
+        $smoke = Join-Path $PSScriptRoot $(if ($phase -eq 'diagnostics') { 'diagnostics-smoke.cjs' } else { 'smoke.cjs' })
         $env:QIREADER_TEST_PHASE = $phase
         $stdout = Join-Path $testRoot ($phase + '.out.log')
         $stderr = Join-Path $testRoot ($phase + '.err.log')
@@ -25,6 +27,7 @@ try {
     }
 } finally {
     Remove-Item Env:QIREADER_TEST_PROFILE -ErrorAction SilentlyContinue
+    Remove-Item Env:QIREADER_TEST_DAY -ErrorAction SilentlyContinue
     Remove-Item Env:QIREADER_TEST_PHASE -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $testRoot -Recurse -Force
 }

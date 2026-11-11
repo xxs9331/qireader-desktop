@@ -1,15 +1,16 @@
 {
   "name": "qireader-desktop",
   "productName": "QiReader Desktop",
-  "version": "0.13.1",
+  "version": "0.16.0",
   "private": true,
   "description": "QiReader and original articles in one desktop window",
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/policy.test.cjs test/reading-progress.test.cjs test/cubox.test.cjs test/network-proxy.test.cjs test/shortcuts.test.cjs",
+    "test": "node --test test/policy.test.cjs test/reading-progress.test.cjs test/cubox.test.cjs test/network-proxy.test.cjs test/shortcuts.test.cjs test/reading-scene.test.cjs test/reader-navigation.test.cjs test/page-status.test.cjs",
+    "build:icons": "electron scripts/build-icons.cjs",
     "test:browser": "node test/run-smoke.cjs",
-    "package:win": "electron-packager . QiReader-Desktop --platform=win32 --arch=x64 --out=dist --asar --ignore=\"^/(dist|test|artifacts|\\.git|\\.github)(/|$)|^/VALIDATION\\.md$|^/network\\.log(\\.1)?$|^/(cubox-settings|proxy-settings|reading-progress|shortcuts)\\.json(\\.tmp)?$\""
+    "package:win": "electron-packager . QiReader-Desktop --platform=win32 --arch=x64 --out=dist --asar --icon=assets/icon.ico --ignore=\"^/(dist|test|artifacts|scripts|\\.git|\\.github)(/|$)|^/VALIDATION\\.md$|^/network\\.log(\\.1)?$|^/(cubox-settings|proxy-settings|reading-progress|reading-scene|shortcuts)\\.json(\\.tmp)?$\""
   },
   "devDependencies": {
     "@electron/packager": "20.3.0",
