@@ -18,7 +18,6 @@
     <div class="toolbar-center">
       <div id="reading-status">
         <div id="lamp-round" hidden>
-          <div class="lamp-caption"><span id="lamp-count" role="status"></span><button id="round-reset" title="仅重新开始当前模式的本轮点灯，不清除历史统计">新一轮</button></div>
           <div id="progress-lamps" role="progressbar" aria-label="本轮完成进度" aria-valuemin="0"></div>
         </div>
         <div class="progress-line">
@@ -41,6 +40,17 @@
   <img id="reader-preview" class="preview" alt="">
   <img id="original-preview" class="preview" alt="">
   <div id="splitter" role="separator" aria-label="拖动调整列表宽度" aria-orientation="vertical" aria-valuemin="180" aria-valuenow="280" tabindex="0"></div>
+  <div id="round-complete" hidden>
+    <section role="dialog" aria-modal="true" aria-labelledby="round-title" aria-describedby="round-description" tabindex="-1">
+      <button id="round-close" aria-label="关闭提示并开始下一轮">×</button>
+      <div class="round-check" aria-hidden="true">✓</div>
+      <h1 id="round-title">本轮已完成</h1>
+      <p id="round-description"></p>
+      <p id="round-error" role="alert"></p>
+      <button id="round-continue">开始下一轮</button>
+      <p class="round-hint">按 Enter 或 Esc 继续 · 空格不会关闭提示</p>
+    </section>
+  </div>
   <script src="shell.js"></script>
 </body>
 </html>

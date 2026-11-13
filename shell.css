@@ -1,4 +1,4 @@
-:root { color-scheme: light; font: 13px "Segoe UI", "Microsoft YaHei", sans-serif; color: #444; background: #fff; --list-width: 280px; }
+:root { color-scheme: light; font: 13px "Segoe UI", "Microsoft YaHei", sans-serif; color: #444; background: transparent; --list-width: 280px; }
 * { box-sizing: border-box; }
 body { margin: 0; overflow: hidden; }
 header { height: 44px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px; padding: 5px 10px; border-bottom: 1px solid #ececec; white-space: nowrap; }
@@ -42,10 +42,17 @@ body.previewing .preview { display: block; }
 /* Keep the original progress markup and behavior available when switching styles. */
 #reading-status.lamp-style > .progress-line, #reading-status.lamp-style > progress { display: none; }
 #lamp-round[hidden] { display: none; }
-.lamp-caption { display: flex; align-items: center; justify-content: center; gap: 8px; height: 20px; font-size: 12px; }
-.lamp-caption button { padding: 0 5px; font-size: 10px; min-height: 0; }
 #progress-lamps { display: flex; justify-content: safe center; gap: clamp(2px, .4vw, 5px); padding: 2px 1px; max-width: 100%; overflow-x: auto; scrollbar-width: thin; }
 .progress-lamp { width: clamp(8px, .75vw, 11px); height: clamp(8px, .75vw, 11px); flex: 0 0 clamp(8px, .75vw, 11px); border-radius: 50%; box-sizing: border-box; background: #e1dce9; border: 1px solid #bdb2cd; }
-.lamp-caption #lamp-count { overflow: hidden; text-overflow: ellipsis; }
-.lamp-caption button { flex-shrink: 0; }
 .progress-lamp.lit { background: #53d8b2; border-color: #259b7b; box-shadow: 0 0 5px #53d8b280; }
+header { background: #fff; }
+#round-complete { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: #171324b8; }
+#round-complete section { position: relative; width: min(440px, 90vw); padding: 38px 30px 26px; background: #fff; border-radius: 20px; text-align: center; box-shadow: 0 24px 80px #0005; outline: none; }
+#round-close { position: absolute; right: 12px; top: 8px; font-size: 24px; color: #888; }
+.round-check { margin: auto; width: 56px; height: 56px; border-radius: 50%; background: #d9f7ed; color: #20886a; font-size: 36px; }
+#round-title { font-size: 24px; margin: 20px 0 12px; }
+#round-description { color: #666; line-height: 1.8; }
+#round-continue { margin-top: 14px; padding: 12px 30px; background: #70518f; color: #fff; border-radius: 10px; }
+.round-hint { font-size: 12px; color: #999; margin: 18px 0 0; }
+#round-error { color: #ac3131; }
+.round-blocked main, .round-blocked .preview, .round-blocked #splitter { visibility: hidden; }

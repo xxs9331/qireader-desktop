@@ -3,6 +3,7 @@ let bindings = {};
 ipcRenderer.on('desktop:bindings', (_event, value) => { bindings = value; });
 
 if (process.isMainFrame && /\/(shell|navigation)\.html$/.test(location.pathname)) window.addEventListener('keydown', event => {
+  if (document.getElementById('round-complete')?.hidden === false) return;
   if (!event.isTrusted || event.repeat || event.isComposing || event.composedPath().some(node =>
     node instanceof Element && (node.isContentEditable || node.matches('input,textarea,select,[role="textbox"],[role="searchbox"],[role="combobox"],[role="dialog"],dialog')))) return;
   const key = event.code === 'Space' || event.key === ' ' ? 'Space' : event.key.length === 1 ? event.key.toUpperCase() : event.key;

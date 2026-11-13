@@ -37,6 +37,7 @@ function createWindow() {
   });
   const shellView = new WebContentsView({ webPreferences: { ...remotePreferences, backgroundThrottling: false, preload: path.join(__dirname, 'shell-preload.cjs') } });
   const shellContents = shellView.webContents;
+  shellView.setBackgroundColor('#00000000');
   win.contentView.addChildView(shellView);
   const reader = new WebContentsView({ webPreferences: {
     ...remotePreferences, backgroundThrottling: false, session: browserSession, preload: path.join(__dirname, 'reader-preload.cjs'), additionalArguments: ['--qireader-list']
@@ -63,6 +64,7 @@ function createWindow() {
   let pendingURL = '', selection = 0, poolState = '', proxyQueue = Promise.resolve();
   let prefetchAnchor = '', prefetchRoute = '', prefetchTargets = [];
   const state = { error: scene.error, url: '', screening: false, listHidden, listWidth, listSide, readerZoom: scene.data.layout.readerZoom, originalZoom: 100, canPrevious: false, canNext: false, progressPeriod: scene.data.layout.period };
+  let roundBlocked = false;
   const progress = new ReadingProgress({
     file: path.join(app.getPath('userData'), 'reading-progress.json'),
     fetch: (url, options) => browserSession.fetch(url, options), onChange: publish
@@ -187,8 +189,22 @@ function createWindow() {
 
   function publish() {
     if (!win.isDestroyed()) {
+      const round = progress.roundSummary(state.screening ? 'saving' : 'reading');
+      const blocked = scene.summary().progressStyle === 'lamps' && round.ready && round.done >= round.total;
+      if (blocked !== roundBlocked) {
+        roundBlocked = blocked;
+        if (blocked) {
+          dragging = false; dragRequest++; shellContents.send('shell:end-drag');
+          win.contentView.addChildView(shellView); shellContents.focus();
+        } else {
+          for (const view of [reader, original, navigation]) win.contentView.addChildView(view);
+          if (state.screening) reader.webContents.focus(); else void focusReading();
+        }
+        networkProxy.log(blocked ? 'round-completed' : 'round-unblocked', shellURL, { pane: 'shell' });
+      }
+      reader.webContents.send('reader:round-blocked', roundBlocked);
       reader.webContents.send('reader:round-account', progress.active);
-      shellContents.send('shell:state', { ...state, progressStyle: scene.summary().progressStyle, round: progress.roundSummary(state.screening ? 'saving' : 'reading'), shortcuts: shortcuts.bindings, progress: state.screening ? progress.screeningSummary() : progress.summary(state.progressPeriod),
+      shellContents.send('shell:state', { ...state, roundBlocked, progressStyle: scene.summary().progressStyle, round, shortcuts: shortcuts.bindings, progress: state.screening ? progress.screeningSummary() : progress.summary(state.progressPeriod),
         cubox: { ...cubox.summary(original.webContents.getURL()), busy: collecting || cubox.busy,
           available: Boolean(selectedURL && originalPage.ready && !originalPage.failed && originalPage.status < 400 && !original.webContents.isLoadingMainFrame() && webURL(original.webContents.getURL())) } });
       const pool = { ready: [...preloaded.values()].filter(page => page.ready).map(page => page.url),
@@ -209,7 +225,7 @@ function createWindow() {
   }
   async function focusReading() {
     const page = originalPage;
-    const available = () => !state.screening && !win.isDestroyed() && win.isFocused() && !settingsWindow && !popups.size && !dragging &&
+    const available = () => !roundBlocked && !state.screening && !win.isDestroyed() && win.isFocused() && !settingsWindow && !popups.size && !dragging &&
       page === originalPage && page.ready && !original.webContents.isDestroyed();
     if (!available()) return;
     const focused = webContents.getFocusedWebContents();
@@ -239,7 +255,7 @@ function createWindow() {
     for (const page of preloaded.values()) page.view.setBounds(original.getBounds());
     navigation.setBounds({ x: 12, y: Math.max(44, height - 60), width: 104, height: 44 });
     navigation.setVisible(!state.screening && Boolean(selectedURL) && listHidden);
-    if (dragging) { if (win.contentView.children.at(-1) !== shellView) win.contentView.addChildView(shellView); }
+    if (dragging || roundBlocked) { if (win.contentView.children.at(-1) !== shellView) win.contentView.addChildView(shellView); }
     else {
       const order = [reader, original, navigation], children = win.contentView.children;
       if (order.some((view, index) => children[children.length - 3 + index] !== view)) {
@@ -600,14 +616,14 @@ function createWindow() {
   observeRemote('reader', reader);
 
   function article(event, message) {
-    if (state.screening) return;
+    if (state.screening || roundBlocked) return;
     if (event.sender !== reader.webContents || event.senderFrame !== reader.webContents.mainFrame ||
         !readerURL(event.senderFrame.url) || !message || typeof message.route !== 'string') return;
     if (new URL(event.senderFrame.url).pathname !== message.route || !/\/entries\/[^/]+/.test(message.route)) return;
     if (webURL(message.url) !== selectedURL) openOriginal(message.url);
   }
   async function listArticle(event, message) {
-    if (state.screening) return { ok: false };
+    if (state.screening || roundBlocked) return { ok: false };
     if (event.sender !== reader.webContents || event.senderFrame !== reader.webContents.mainFrame ||
         !readerURL(event.senderFrame.url) || !message || typeof message.id !== 'string' || !message.id ||
         new URL(event.senderFrame.url).pathname !== message.route || !webURL(message.url)) return { ok: false };
@@ -645,6 +661,14 @@ function createWindow() {
   }
   ipcMain.on('desktop:shortcut', shortcut);
   async function perform(action, value) {
+    if (action === 'round-continue') {
+      if (!roundBlocked) return;
+      const kind = state.screening ? 'saving' : 'reading';
+      try { progress.configureRound({ kind, target: progress.roundSummary(kind).total, reset: true }); }
+      catch (error) { state.error = error.message; publish(); }
+      return;
+    }
+    if (roundBlocked && action !== 'ready') return;
     if (action === 'screening') {
       state.screening = !state.screening; state.error = ''; clearPreloaded();
       dragRequest++; dragging = false; shellContents.send('shell:end-drag');
@@ -659,11 +683,6 @@ function createWindow() {
     if (state.screening && ['previous', 'next', 'cubox-save', 'external', 'toggle-list', 'list-side', 'drag', 'progress-period', 'progress-older'].includes(action)) return;
     if (action === 'ready') publish();
     if (action === 'settings') openSettings();
-    if (action === 'round-reset') {
-      const kind = state.screening ? 'saving' : 'reading';
-      try { progress.configureRound({ kind, target: progress.roundSummary(kind).total, reset: true }); }
-      catch (error) { state.error = error.message; publish(); }
-    }
     if (action === 'cubox-save' && !collecting) {
       await cubox.ready;
       if (!cubox.summary().configured) { openSettings(); return; }
@@ -772,8 +791,9 @@ function createWindow() {
         typeof message.account !== 'string' || !message.account.startsWith(new URL(event.senderFrame.url).origin + '|')) return;
     try { progress.addedToLater(message.account, message.id); }
     catch (error) { state.error = error.message; publish(); }
+    return roundBlocked;
   }
-  ipcMain.on('reader:round-added', roundAdded);
+  ipcMain.handle('reader:round-added', roundAdded);
   ipcMain.on('reader:progress-changed', progressChanged);
   ipcMain.on('shell:command', command);
   for (const contents of [shellContents, navigationContents]) {
@@ -808,7 +828,7 @@ function createWindow() {
     ipcMain.removeListener('reader:error', readerError);
     ipcMain.removeListener('reader:navigation', navigationState);
     ipcMain.removeListener('reader:completed', completed);
-    ipcMain.removeListener('reader:round-added', roundAdded);
+    ipcMain.removeHandler('reader:round-added');
     ipcMain.removeListener('reader:progress-changed', progressChanged);
     ipcMain.removeListener('shell:command', command);
     ipcMain.removeListener('desktop:shortcut', shortcut);

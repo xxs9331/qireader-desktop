@@ -1,5 +1,15 @@
 const $ = id => document.getElementById(id);
-for (const action of ['screening', 'toggle-list', 'list-side', 'external', 'cubox-save', 'settings', 'round-reset']) $(action).addEventListener('click', () => window.desktop.command(action));
+for (const action of ['screening', 'toggle-list', 'list-side', 'external', 'cubox-save', 'settings']) $(action).addEventListener('click', () => window.desktop.command(action));
+for (const id of ['round-continue', 'round-close']) $(id).addEventListener('click', () => window.desktop.command('round-continue'));
+window.addEventListener('keydown', event => {
+  if ($('round-complete').hidden) return;
+  event.preventDefault(); event.stopImmediatePropagation();
+  if (event.key === 'Tab') {
+    const next = document.activeElement === $('round-continue') ? $('round-close') : $('round-continue');
+    next.focus(); return;
+  }
+  if (!event.repeat && !event.isComposing && !event.ctrlKey && !event.altKey && !event.metaKey && ['Enter', 'Escape'].includes(event.key)) window.desktop.command('round-continue');
+}, true);
 for (const [id, action] of [['progress-period', 'progress-period'], ['progress-count', 'progress-refresh'], ['progress-older', 'progress-older']]) {
   $(id).addEventListener('click', () => window.desktop.command(action));
 }
@@ -43,20 +53,28 @@ splitter.addEventListener('keydown', event => {
 window.desktop.onEndDrag(endDrag);
 window.desktop.onPreview(images => { $('reader-preview').src = images[0]; $('original-preview').src = images[1]; });
 window.desktop.onState(state => {
+  const wasBlocked = !$('round-complete').hidden;
+  $('round-complete').hidden = !state.roundBlocked;
+  document.body.classList.toggle('round-blocked', Boolean(state.roundBlocked));
+  document.querySelector('header').inert = Boolean(state.roundBlocked);
+  $('splitter').inert = Boolean(state.roundBlocked);
+  if (state.roundBlocked) {
+    $('round-description').textContent = `已完成本轮 ${state.round.total} 篇${state.screening ? '添加到稍后阅读' : '阅读'}。休息一下，准备好后再继续。`;
+    $('round-error').textContent = state.error || '';
+    if (!wasBlocked) $('round-complete').querySelector('section').focus();
+  }
   const lamps = state.progressStyle === 'lamps';
   $('reading-status').classList.toggle('lamp-style', lamps);
   $('lamp-round').hidden = !lamps;
   if (lamps && state.round) {
     const { total, done, ready } = state.round;
-    $('lamp-count').textContent = ready ? `本轮${state.screening ? '添加' : '阅读'} ${done} / ${total}${done >= total ? ' · 已点亮 ✓' : ''}` : '等待账号识别';
-    $('round-reset').disabled = !ready;
     const lights = $('progress-lamps');
     if (lights.children.length !== total) lights.replaceChildren(...Array.from({ length: total }, (_, index) => {
       const light = document.createElement('span'); light.className = 'progress-lamp'; light.setAttribute('aria-hidden', 'true'); light.title = `第 ${index + 1} 篇`; return light;
     }));
     for (const [index, light] of [...lights.children].entries()) light.classList.toggle('lit', ready && index < done);
     lights.setAttribute('aria-valuemax', total); lights.setAttribute('aria-valuenow', ready ? Math.min(done, total) : 0);
-    lights.setAttribute('aria-valuetext', $('lamp-count').textContent);
+    lights.setAttribute('aria-valuetext', ready ? `本轮${state.screening ? '添加' : '阅读'} ${done} / ${total}` : '等待账号识别');
   }
   document.body.classList.toggle('screening-mode', Boolean(state.screening));
   $('screening').textContent = state.screening ? '返回阅读' : '筛选订阅';

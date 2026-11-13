@@ -50,6 +50,7 @@ test('both isolated preload handlers honor bindings and reject typing, IME, repe
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
       require: () => ({ ipcRenderer: { on: (name, fn) => { listeners[name] = fn; }, send: (...args) => calls.push(args) }, contextBridge: { exposeInMainWorld() {} } }),
       process: { isMainFrame: true, argv: [] }, location: { pathname: '/shell.html' }, Element,
+      document: { getElementById: () => null },
       window: { addEventListener: (name, fn) => { if (name === 'keydown' && typeof fn === 'function') handler = fn; } }
     });
     listeners['desktop:bindings']({}, defaults);

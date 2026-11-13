@@ -2,6 +2,8 @@ const { ipcRenderer } = require('electron');
 let bindings = {};
 let screening = false;
 let roundAccount = null;
+let roundBlocked = false;
+ipcRenderer.on('reader:round-blocked', (_event, value) => { roundBlocked = value === true; });
 ipcRenderer.on('reader:round-account', (_event, key) => { roundAccount = key; });
 ipcRenderer.on('desktop:bindings', (_event, value) => { bindings = value; });
 ipcRenderer.on('reader:screening', (_event, value) => { screening = value === true; });
@@ -37,7 +39,7 @@ if (process.isMainFrame && !process.argv.includes('--qireader-list')) {
 }
 
 if (process.isMainFrame) window.addEventListener('keydown', event => {
-  if (screening) return;
+  if (screening || roundBlocked) return;
   if (!event.isTrusted || event.repeat || event.isComposing || event.composedPath().some(node =>
     node instanceof Element && (node.isContentEditable || node.matches('input,textarea,select,[role="textbox"],[role="searchbox"],[role="combobox"],[role="dialog"],dialog')))) return;
   const key = event.code === 'Space' || event.key === ' ' ? 'Space' : event.key.length === 1 ? event.key.toUpperCase() : event.key;
@@ -122,18 +124,18 @@ if (process.isMainFrame && process.argv.includes('--qireader-list') && ['https:/
       } catch (error) { if (screenActive()) ipcRenderer.send('reader:error', error.message); }
     }
     async function addLater(row, id) {
-      if (adding.has(id)) return;
+      if (roundBlocked || adding.has(id)) return;
       adding.add(id); row.setAttribute('data-desktop-saving', 'true');
       const route = location.pathname;
       const account = roundAccount;
       addingQueue = addingQueue.catch(() => {}).then(async () => {
-        if (!screenActive() || location.pathname !== route || !row.isConnected || row.getAttribute('data-is-entry') !== id) return;
+        if (roundBlocked || !screenActive() || location.pathname !== route || !row.isConnected || row.getAttribute('data-is-entry') !== id) return;
         const button = row.querySelector('button[title="稍后阅读"],button[title="Read Later"]');
         if (button) {
           const fill = button.querySelector('svg')?.getAttribute('fill');
           if (!fill || fill === 'none') {
             await changeLater(row, id, true, () => button.click());
-            ipcRenderer.send('reader:round-added', { account, id, route });
+            roundBlocked = await ipcRenderer.invoke('reader:round-added', { account, id, route });
           }
         } else {
           const bounds = row.getBoundingClientRect();
@@ -142,7 +144,7 @@ if (process.isMainFrame && process.argv.includes('--qireader-list') && ['https:/
           if (!screenActive() || location.pathname !== route || !row.isConnected || row.getAttribute('data-is-entry') !== id) return;
           if (!checked(item)) {
             await changeLater(row, id, true, () => item.click());
-            ipcRenderer.send('reader:round-added', { account, id, route });
+            roundBlocked = await ipcRenderer.invoke('reader:round-added', { account, id, route });
           }
           else dismissMenu(item);
         }
@@ -277,6 +279,7 @@ if (process.isMainFrame && process.argv.includes('--qireader-list') && ['https:/
       }
     }
     function selectFromList(event) {
+      if (roundBlocked) { event.preventDefault(); event.stopImmediatePropagation(); return; }
       if (event.type === 'click' ? event.button !== 0 : !['Enter', 'o'].includes(event.key)) return;
       const item = listItem(event);
       if (!item) return;
@@ -296,7 +299,7 @@ if (process.isMainFrame && process.argv.includes('--qireader-list') && ['https:/
       void openItem(queue[cursor]);
     }
     ipcRenderer.on('reader:navigate', (_event, direction) => {
-      if (screening) return;
+      if (screening || roundBlocked) return;
       if (opening || ![-1, 1].includes(direction) || queueRoute !== location.pathname) return;
       updateNavigation();
       let index = cursor + direction;
