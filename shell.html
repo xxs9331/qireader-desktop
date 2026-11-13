@@ -43,12 +43,13 @@
   <div id="round-complete" hidden>
     <section role="dialog" aria-modal="true" aria-labelledby="round-title" aria-describedby="round-description" tabindex="-1">
       <button id="round-close" aria-label="关闭提示并开始下一轮">×</button>
-      <div class="round-check" aria-hidden="true">✓</div>
-      <h1 id="round-title">本轮已完成</h1>
+      <p class="round-eyebrow">一轮专注，告一段落</p>
+      <div id="round-lights" aria-hidden="true"></div>
+      <h1 id="round-title">这一轮，刚刚好。</h1>
       <p id="round-description"></p>
       <p id="round-error" role="alert"></p>
-      <button id="round-continue">开始下一轮</button>
-      <p class="round-hint">按 Enter 或 Esc 继续 · 空格不会关闭提示</p>
+      <button id="round-continue">继续下一轮 <span aria-hidden="true">↗</span></button>
+      <p class="round-hint"><kbd>Enter</kbd> 继续 <span>／</span> <kbd>Esc</kbd> 关闭并继续</p>
     </section>
   </div>
   <script src="shell.js"></script>

@@ -46,13 +46,24 @@ body.previewing .preview { display: block; }
 .progress-lamp { width: clamp(8px, .75vw, 11px); height: clamp(8px, .75vw, 11px); flex: 0 0 clamp(8px, .75vw, 11px); border-radius: 50%; box-sizing: border-box; background: #e1dce9; border: 1px solid #bdb2cd; }
 .progress-lamp.lit { background: #53d8b2; border-color: #259b7b; box-shadow: 0 0 5px #53d8b280; }
 header { background: #fff; }
-#round-complete { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: #171324b8; }
-#round-complete section { position: relative; width: min(440px, 90vw); padding: 38px 30px 26px; background: #fff; border-radius: 20px; text-align: center; box-shadow: 0 24px 80px #0005; outline: none; }
-#round-close { position: absolute; right: 12px; top: 8px; font-size: 24px; color: #888; }
-.round-check { margin: auto; width: 56px; height: 56px; border-radius: 50%; background: #d9f7ed; color: #20886a; font-size: 36px; }
-#round-title { font-size: 24px; margin: 20px 0 12px; }
-#round-description { color: #666; line-height: 1.8; }
-#round-continue { margin-top: 14px; padding: 12px 30px; background: #70518f; color: #fff; border-radius: 10px; }
-.round-hint { font-size: 12px; color: #999; margin: 18px 0 0; }
-#round-error { color: #ac3131; }
+#round-complete { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; overflow: auto; color: #f1f3ed; background: radial-gradient(ellipse at 50% 36%, #34443b 0, #1c2522 48%, #151b19 100%); }
+#round-complete section { width: min(720px, 90vw); padding: 60px 20px; text-align: center; outline: none; animation: round-appear .35s ease-out; }
+#round-close { position: fixed; right: 28px; top: 22px; width: 44px; height: 44px; border: 1px solid #ffffff25; border-radius: 50%; font-size: 24px; color: #c3ccc5; }
+#round-close:hover { background: #ffffff12; }
+.round-eyebrow { margin: 0 0 38px; color: #aab8ac; font-size: 13px; letter-spacing: .25em; }
+#round-lights { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; max-width: 500px; margin: auto; }
+#round-lights span { width: 10px; height: 10px; border-radius: 50%; background: #b5d3a3; box-shadow: 0 0 16px #c6e9a755; }
+#round-title { font-size: clamp(36px, 4.3vw, 64px); font-weight: 500; letter-spacing: -.04em; line-height: 1.3; margin: 34px 0 18px; }
+#round-description { color: #b7c1b9; font-size: 16px; line-height: 1.8; margin: 0; }
+#round-continue { display: inline-flex; gap: 36px; align-items: center; margin-top: 46px; padding: 16px 24px; background: #dbe8c7; color: #263323; border-radius: 8px; font-size: 15px; }
+#round-continue:hover { background: #edf4e2; }
+#round-continue span { font-size: 21px; }
+#round-complete button:focus-visible { outline: 2px solid #dbe8c7; outline-offset: 5px; }
+.round-hint { font-size: 12px; color: #98a59c; margin: 24px 0 0; }
+.round-hint span { padding: 0 10px; color: #56655c; }
+.round-hint kbd { font: inherit; }
+#round-error { color: #ffc6ba; }
+#round-error:empty { display: none; }
+@keyframes round-appear { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { #round-complete section { animation: none; } }
 .round-blocked main, .round-blocked .preview, .round-blocked #splitter { visibility: hidden; }

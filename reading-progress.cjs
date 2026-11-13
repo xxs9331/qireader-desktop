@@ -1,5 +1,6 @@
 const fs = require('node:fs');
-const { readerURL } = require('./policy.cjs');
+const { createHash } = require('node:crypto');
+const { readerURL, webURL } = require('./policy.cjs');
 const { validRounds, countRound } = require('./round-progress.cjs');
 const DAY = 86400000;
 const SCAN_COOLDOWN = 30 * 60000;
@@ -144,20 +145,31 @@ class ReadingProgress {
   }
   roundSummary(kind) {
     const value = this.data.accounts[this.active]?.rounds?.[kind] || { target: 10, ids: [] };
-    return { ready: Boolean(this.active) && !this.storageError, total: value.target, done: value.ids.length, error: this.storageError || '' };
+    const done = kind === 'reading' && value.basis !== 'opened' ? 0 : value.ids.length;
+    return { ready: Boolean(this.active) && !this.storageError, total: value.target, done, error: this.storageError || '' };
   }
   configureRound({ kind, target, reset = false } = {}) {
     if (!['reading', 'saving'].includes(kind) || !Number.isInteger(target) || target < 1 || target > 100 || typeof reset !== 'boolean') throw Error('每轮目标须为 1–100 的整数');
     if (!this.active) throw Error('请登录并等待账号识别后设置目标');
     const account = this.data.accounts[this.active] || { startedAt: this.now(), updatedAt: 0, entries: [] };
     const previous = account.rounds?.[kind];
-    const rounds = { ...account.rounds, [kind]: { target, ids: reset ? [] : previous?.ids || [] } };
+    const rounds = { ...account.rounds, [kind]: { ...previous, target, ids: reset ? [] : previous?.ids || [] } };
     this.save(this.active, account.entries, false, rounds);
   }
   addedToLater(key, id) {
     if (!key || key !== this.active) return;
     const account = this.data.accounts[key] || { startedAt: this.now(), updatedAt: 0, entries: [] };
     const rounds = countRound(account.rounds, 'saving', id);
+    if (rounds !== account.rounds) this.save(key, account.entries, false, rounds);
+  }
+  openedArticle(key, url) {
+    if (!key || key !== this.active || !webURL(url)) return;
+    const account = this.data.accounts[key] || { startedAt: this.now(), updatedAt: 0, entries: [] };
+    const id = createHash('sha256').update(webURL(url)).digest('hex');
+    const previous = account.rounds?.reading;
+    // Removal-based rounds cannot identify which page is currently open.
+    const current = previous?.basis === 'opened' ? account.rounds : { ...account.rounds, reading: { target: previous?.target || 10, ids: [], basis: 'opened' } };
+    const rounds = countRound(current, 'reading', id);
     if (rounds !== account.rounds) this.save(key, account.entries, false, rounds);
   }
   setScreeningGoal(target) {
@@ -261,20 +273,19 @@ class ReadingProgress {
       const done = !entry.tagIds.includes(context.tag);
       const previous = this.data.accounts[context.key]?.entries.find(item => item.id === id);
       if (!done || previous) this.record(context.key, { id, crawledAt: entry.crawledAt, done,
-        ...(done && !previous?.done ? { completedAt: this.now() } : {}) },
-      done && !previous?.done ? countRound(this.data.accounts[context.key]?.rounds, 'reading', id) : undefined);
+        ...(done && !previous?.done ? { completedAt: this.now() } : {}) });
     } catch (error) { this.fail(error); }
   }
-  record(key, entry, rounds) {
+  record(key, entry) {
     const entries = (this.data.accounts[key]?.entries || []).filter(item => item.id !== entry.id);
-    this.save(key, [...entries, entry], false, rounds);
+    this.save(key, [...entries, entry]);
     this.changes.set(`${key}|${entry.id}`, { key, entry, revision: ++this.revision });
   }
   complete(token, confirmedAt = this.now()) {
     const entry = this.data.accounts[token.key]?.entries.find(entry => entry.id === token.id);
     if (!entry) return;
     const completedAt = entry.completedAt >= token.startedAt ? entry.completedAt : confirmedAt;
-    try { this.record(token.key, { ...entry, done: true, completedAt }, entry.done ? this.data.accounts[token.key].rounds : countRound(this.data.accounts[token.key].rounds, 'reading', token.id)); }
+    try { this.record(token.key, { ...entry, done: true, completedAt }); }
     catch (error) { this.fail(error); }
   }
   summary(period = 'today') {

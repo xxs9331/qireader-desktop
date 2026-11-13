@@ -17,7 +17,7 @@
     <form id="round-goals">
       <label for="reading-round-target">每轮阅读篇数</label><input id="reading-round-target" type="number" min="1" max="100" required value="10">
       <label for="saving-round-target">每轮添加到稍后阅读篇数</label><input id="saving-round-target" type="number" min="1" max="100" required value="10">
-      <p>每篇确认完成后亮一盏灯，重复或失败不计数。两种任务独立，关闭重开继续本轮；点满后暂停，点击提示中的继续按钮或按 Enter／Esc 开始下一轮，不改日／周统计。空格不能关闭提示。目标较多时灯可横向滚动。</p>
+      <p>阅读：原文成功打开即亮灯，第一篇亮第一盏，最后一篇点满并提示；后台预加载不计数。添加：加入稍后阅读成功后亮灯。同一轮重复文章不重复计数。点满后暂停，点击继续或按 Enter／Esc 开始下一轮，空格不能关闭提示。两种任务独立，日／周统计不变。目标较多时灯可横向滚动。</p>
       <button id="save-round-goals" type="submit" disabled>保存本轮目标</button>
       <p id="round-goals-result" role="status"></p>
     </form>

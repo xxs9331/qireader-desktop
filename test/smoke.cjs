@@ -163,6 +163,39 @@ window.selectArticle = (id, delay = 0) => {
   await until(() => shellContents.executeJavaScript('Boolean(window.desktop)'), 'Shell preload missing');
   await until(() => navigationContents.executeJavaScript('Boolean(window.desktop)'), 'Floating navigation preload missing');
   if (process.env.QIREADER_TEST_PHASE === 'first') assert.equal(navigation.getVisible(), false);
+  if (process.env.QIREADER_TEST_PHASE === 'rounds') {
+    await until(() => desktop.progress.roundSummary('reading').ready, 'Round account missing');
+    desktop.progress.configureRound({ kind: 'reading', target: 2, reset: true });
+    holdTracking = true; holdRemoval = true;
+    await rc.executeJavaScript('document.querySelector(\'[data-is-entry="a"] a\').click()');
+    await until(() => oc().getURL().endsWith('/question/a') && desktop.progress.roundSummary('reading').done === 1, 'First opened article did not light lamp one');
+    assert.equal(desktop.progress.summary().done, 0);
+    assert.equal(await shellContents.executeJavaScript('document.getElementById("round-complete").hidden'), true, 'First article showed completion too early');
+    await until(() => preloaded.get('https://www.zhihu.com/question/b')?.ready, 'Next article did not prepare');
+    assert.equal(desktop.progress.roundSummary('reading').done, 1, 'Preloading lit another lamp');
+    await pressKey(oc(), 'Space');
+    await until(() => oc().getURL().endsWith('/question/b') && shellContents.executeJavaScript('!document.getElementById("round-complete").hidden'), 'Last lamp did not trigger completion on its own article');
+    assert.equal(desktop.progress.roundSummary('reading').done, 2);
+    fs.mkdirSync(path.join(__dirname, '..', 'artifacts'), { recursive: true });
+    await pause(400);
+    fs.writeFileSync(path.join(__dirname, '..', 'artifacts', `round-reading-${process.platform}.png`), (await shellContents.capturePage()).toPNG());
+    await pressKey(shellContents, 'Space');
+    assert.ok(oc().getURL().endsWith('/question/b'));
+    holdTracking = false; releaseTracking(); holdRemoval = false; releaseRemoval();
+    await pause(650);
+    assert.equal(desktop.progress.roundSummary('reading').done, 2, 'Late confirmation changed lamp count');
+    await pressKey(shellContents, 'Escape');
+    await until(() => desktop.progress.roundSummary('reading').done === 0, 'Round did not reset');
+    await rc.executeJavaScript('addRow("c").querySelector("a").click()');
+    await until(() => oc().getURL().endsWith('/question/c') && desktop.progress.roundSummary('reading').done === 1, 'Next round did not start with one lamp');
+    assert.equal(await shellContents.executeJavaScript('document.getElementById("round-complete").hidden'), true, 'Next round first article incorrectly showed completion');
+    console.log('PASS: opening lights first lamp before confirmation; preloads do not count; final lamp blocks on final article; next round starts at one');
+    win.close(); await until(() => win.isDestroyed(), 'Round test window did not close'); app.quit(); return;
+  }
+  if (process.env.QIREADER_TEST_PHASE === 'first') {
+    await until(() => desktop.progress.roundSummary('reading').ready, 'Round account missing');
+    desktop.progress.configureRound({ kind: 'reading', target: 100, reset: true });
+  }
 
   if (process.env.QIREADER_TEST_PHASE.startsWith('screening')) {
     await until(() => desktop.progress.screeningSummary().ready, 'Screening account was not verified');
@@ -804,10 +837,10 @@ window.selectArticle = (id, delay = 0) => {
     assert.equal(await rc.executeJavaScript(`window.removeCalls.includes(${JSON.stringify(id)})`), false);
   }
   assert.deepEqual(confirmedRemovals, ['success','success-two']);
-  assert.equal(desktop.progress.roundSummary('reading').done, 2);
-  await until(() => shellContents.executeJavaScript('document.querySelectorAll("#progress-lamps .lit").length===2'), 'Confirmed reading did not light two lamps');
+  const openedCount = desktop.progress.roundSummary('reading').done;
+  assert.ok(openedCount >= 3, 'Opened articles, including rejected removals, must light lamps');
   const beforeRoundReset = desktop.progress.summary().done;
-  desktop.progress.configureRound({ kind: 'reading', target: 2 });
+  desktop.progress.configureRound({ kind: 'reading', target: openedCount });
   await until(() => shellContents.executeJavaScript('!document.getElementById("round-complete").hidden'), 'Round completion did not block the window');
   assert.equal(win.contentView.children.at(-1).webContents, shellContents, 'Remote views must be behind the blocking overlay');
   fs.writeFileSync(path.join(__dirname, '..', 'artifacts', `round-complete-${process.platform}.png`), (await shellContents.capturePage()).toPNG());
@@ -815,7 +848,7 @@ window.selectArticle = (id, delay = 0) => {
   await pressKey(shellContents, 'Space');
   await pause(150);
   assert.equal(oc().getURL(), blockedURL, 'Space changed the article behind the dialog');
-  assert.equal(desktop.progress.roundSummary('reading').done, 2, 'Space acknowledged the completion dialog');
+  assert.equal(desktop.progress.roundSummary('reading').done, openedCount, 'Space acknowledged the completion dialog');
   await shellContents.executeJavaScript('document.getElementById("round-continue").click()');
   await until(() => desktop.progress.roundSummary('reading').done === 0, 'New reading round did not reset lamps');
   assert.equal(desktop.progress.summary().done, beforeRoundReset, 'Round reset must preserve daily reading progress');

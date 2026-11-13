@@ -65,6 +65,7 @@ function createWindow() {
   let prefetchAnchor = '', prefetchRoute = '', prefetchTargets = [];
   const state = { error: scene.error, url: '', screening: false, listHidden, listWidth, listSide, readerZoom: scene.data.layout.readerZoom, originalZoom: 100, canPrevious: false, canNext: false, progressPeriod: scene.data.layout.period };
   let roundBlocked = false;
+  let roundArticle = null, roundArticleAccount = null;
   const progress = new ReadingProgress({
     file: path.join(app.getPath('userData'), 'reading-progress.json'),
     fetch: (url, options) => browserSession.fetch(url, options), onChange: publish
@@ -189,6 +190,12 @@ function createWindow() {
 
   function publish() {
     if (!win.isDestroyed()) {
+      if (!state.screening && !pendingURL && selectedURL && originalPage.displayed && originalPage.ready && !originalPage.failed && !originalPage.issue &&
+          progress.active && (roundArticle !== originalPage || roundArticleAccount !== progress.active)) {
+        roundArticle = originalPage; roundArticleAccount = progress.active;
+        try { progress.openedArticle(progress.active, selectedURL); }
+        catch (error) { state.error = error.message; }
+      }
       const round = progress.roundSummary(state.screening ? 'saving' : 'reading');
       const blocked = scene.summary().progressStyle === 'lamps' && round.ready && round.done >= round.total;
       if (blocked !== roundBlocked) {
@@ -420,7 +427,7 @@ function createWindow() {
     return page.loading;
   }
   async function openOriginal(value) {
-    if (state.screening) return false;
+    if (state.screening || roundBlocked) return false;
     const url = webURL(value);
     if (!url) return false;
     const request = ++selection;

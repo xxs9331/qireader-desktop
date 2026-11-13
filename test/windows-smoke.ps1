@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][string]$RuntimeZip, [ValidateSet('first', 'restart', 'resume-off', 'budget', 'screening', 'screening-restart', 'diagnostics')][string[]]$Phases = @('first', 'restart', 'resume-off', 'budget', 'screening', 'screening-restart', 'diagnostics'))
+param([Parameter(Mandatory = $true)][string]$RuntimeZip, [ValidateSet('rounds', 'first', 'restart', 'resume-off', 'budget', 'screening', 'screening-restart', 'diagnostics')][string[]]$Phases = @('first', 'restart', 'resume-off', 'budget', 'screening', 'screening-restart', 'diagnostics'))
 $ErrorActionPreference = 'Stop'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('qireader-smoke-' + [guid]::NewGuid().ToString('N'))
 $runtime = Join-Path $testRoot 'runtime'

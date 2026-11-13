@@ -3,6 +3,7 @@ function validRounds(value) {
   return value === undefined || value && typeof value === 'object' && !Array.isArray(value) &&
     Object.keys(value).every(kind => kinds.includes(kind)) && Object.values(value).every(round =>
       round && Number.isInteger(round.target) && round.target >= 1 && round.target <= 100 &&
+      (round.basis === undefined || round.basis === 'opened') &&
       Array.isArray(round.ids) && round.ids.length <= 100 && round.ids.every(id => typeof id === 'string' && id.length > 0 && id.length <= 512));
 }
 function countRound(rounds, kind, id) {

@@ -9,15 +9,20 @@ const now = +new Date(2026, 9, 28, 12);
 const today = boundaries(now).today;
 const row = (id, crawledAt = today + 1000) => ({ id, crawledAt, status: 1, tagIds: ['later'], timestamp: '9007199254740993999' });
 
-test('lamp rounds count confirmed reading and saves independently, deduplicate, reset and survive restart', async t => {
+test('lamp rounds count opened articles independently of removal confirmation and saving, deduplicate and persist', async t => {
   const { store, server, options } = setup(t);
   server.entries = [row('a'), row('b')]; await store.refresh(origin);
   const daily = store.screeningSummary(), key = store.active;
   const token = await store.track(origin, 'a');
   assert.equal(store.roundSummary('reading').done, 0);
+  store.openedArticle(key, 'https://example.com/a'); store.openedArticle(key, 'https://example.com/a');
+  assert.equal(store.roundSummary('reading').done, 1);
+  assert.equal(store.summary().done, 0, 'Opening lights a lamp before removal confirmation');
   store.complete(token); store.complete(token);
   assert.equal(store.roundSummary('reading').done, 1);
   assert.equal(store.roundSummary('saving').done, 0);
+  store.openedArticle('foreign', 'https://example.com/b'); store.openedArticle(key, 'javascript:bad');
+  assert.equal(store.roundSummary('reading').done, 1);
   store.addedToLater(key, 'a'); store.addedToLater(key, 'a');
   assert.equal(store.roundSummary('saving').done, 1);
   assert.deepEqual(store.screeningSummary(), daily);
@@ -43,6 +48,17 @@ test('invalid round targets and write failures preserve progress and legacy stat
   store.file = path.join(path.dirname(options.file), 'missing', 'progress.json');
   assert.throws(() => store.addedToLater(store.active, 'failed'));
   assert.equal(store.roundSummary('saving').done, 1);
+});
+test('old removal-based full rounds do not block the first opened page after upgrading', async t => {
+  const { store, options } = setup(t); await store.refresh(origin);
+  const key = store.active, account = store.data.accounts[key];
+  store.save(key, account.entries, false, { reading: { target: 2, ids: ['old-a', 'old-b'] } });
+  const restored = new ReadingProgress(options); await restored.refresh(origin);
+  assert.equal(restored.roundSummary('reading').done, 0);
+  restored.openedArticle(key, 'https://example.com/first');
+  assert.equal(restored.roundSummary('reading').done, 1);
+  assert.equal(restored.roundSummary('reading').total, 2);
+  assert.deepEqual(restored.summary(), store.summary());
 });
 
 test('screening counts confirmed unique IDs locally and preserves independent reading goals across restart', async t => {
