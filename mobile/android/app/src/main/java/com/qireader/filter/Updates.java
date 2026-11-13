@@ -32,14 +32,15 @@ final class Updates {
 
     private void ui(Runnable action) { activity.runOnUiThread(() -> { if (!activity.isFinishing() && !activity.isDestroyed()) action.run(); }); }
     private void toast(String message) { ui(() -> Toast.makeText(activity, message, Toast.LENGTH_LONG).show()); }
-    private HttpURLConnection connect(String address, boolean api) throws Exception {
+    private HttpURLConnection connect(String address) throws Exception {
         for (int i = 0; i < 5; i++) {
-            if (!api && !UpdatePolicy.redirect(address)) throw new Exception("更新下载地址无效");
+            if (!UpdatePolicy.redirect(address)) throw new Exception("更新下载地址无效");
             HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
             connection.setInstanceFollowRedirects(false); connection.setConnectTimeout(15000); connection.setReadTimeout(30000);
+            connection.setUseCaches(false); connection.setRequestProperty("Cache-Control", "no-cache");
             connection.setRequestProperty("User-Agent", "QiReader-Filter-Android"); connection.setRequestProperty("Accept", "application/json");
             int status = connection.getResponseCode();
-            if (status >= 300 && status < 400 && !api) {
+            if (status >= 300 && status < 400) {
                 String next = connection.getHeaderField("Location"); connection.disconnect();
                 if (next == null) throw new Exception("更新重定向无效");
                 address = next; continue;
@@ -49,8 +50,8 @@ final class Updates {
         }
         throw new Exception("更新重定向次数过多");
     }
-    private String json(String address, boolean api) throws Exception {
-        HttpURLConnection connection = connect(address, api);
+    private String json(String address) throws Exception {
+        HttpURLConnection connection = connect(address);
         try (InputStream stream = connection.getInputStream(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[4096]; int read;
             while ((read = stream.read(buffer)) != -1) {
@@ -66,7 +67,7 @@ final class Updates {
         if (manual) toast("正在检查更新");
         new Thread(() -> {
             try {
-                JSONObject info = new JSONObject(json("https://raw.githubusercontent.com/xxs9331/qireader-desktop/main/mobile/android/update.json", true));
+                JSONObject info = new JSONObject(json(UpdatePolicy.MANIFEST));
                 int installed = activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0).versionCode;
                 if (info.getInt("versionCode") <= installed) { if (manual) toast("当前已是最新版本"); }
                 else {
@@ -87,7 +88,7 @@ final class Updates {
                 File directory = new File(activity.getCacheDir(), "updates");
                 if (!directory.isDirectory() && !directory.mkdirs()) throw new Exception("无法创建更新目录");
                 partial = new File(directory, "update.part");
-                HttpURLConnection connection = connect(info.getString("url"), false);
+                HttpURLConnection connection = connect(info.getString("url"));
                 MessageDigest digest = MessageDigest.getInstance("SHA-256"); long size = 0;
                 try (InputStream stream = connection.getInputStream(); FileOutputStream output = new FileOutputStream(partial)) {
                     byte[] buffer = new byte[32768]; int read;

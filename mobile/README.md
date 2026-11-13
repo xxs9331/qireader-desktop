@@ -1,4 +1,4 @@
-# 订阅筛选 · Android 0.1.1
+# 订阅筛选 · Android 0.1.2
 
 手机端只做一件事：浏览 QiReader 订阅，点击文章加入稍后阅读。默认每轮成功添加 5 篇，在「设置」中可改为 1–100 篇。没有阅读器、收藏、日／周统计或进度条。
 
@@ -10,11 +10,13 @@
 
 ## 安装与更新
 
-首次从 [Android 发布页](https://github.com/xxs9331/qireader-desktop/releases/tag/android-v0.1.1) 下载 APK 安装，打开后登录自己的 QiReader 账号即可。可在设置中切换 qireader.com／qireader.com.cn，两站的账号轮次分开保存。
+首次从 [OSS 国内直链](https://download.swlyes.top/updates/qireader-filter/QiReader-Filter-0.1.2.apk) 下载 APK 安装，打开后登录自己的 QiReader 账号即可。可在设置中切换 qireader.com／qireader.com.cn，两站的账号轮次分开保存。
 
 应用启动时自动检查版本，也可在「设置 → 检查更新」手动检查。有新版时点击下载，应用校验 SHA-256、包名、版本号与现有签名，然后调起系统安装页面。首次更新可能需要允许本应用安装更新；取消该权限不会反复跳转。之后仍需按 Android 的系统要求确认安装，无需自行寻找、搬运 APK，也不要先卸载旧版。
 
-更新元数据位于 [android/update.json](android/update.json)，更新包托管在同一 GitHub 仓库的 Android Release，桌面发布不会覆盖手机更新渠道。访问 GitHub 失败时保留当前版本，可稍后重试。更新检查不携带 QiReader 的登录 Cookie。
+从 0.1.2 开始，更新检查和 APK 下载都走阿里云 OSS 国内域名，入口为 [latest.json](https://download.swlyes.top/updates/qireader-filter/latest.json)，不再依赖 GitHub。更新检查不携带 QiReader 的登录 Cookie。
+
+0.1.0／0.1.1 的旧更新器写死了 GitHub 地址，因此保留一个同签名 0.1.2 的 GitHub 迁移包，以及固定指向它的 [旧更新指针](android/update.json)。旧版可先从应用内升级一次；如果 GitHub 连不上，可使用上面的 OSS 直链覆盖安装一次。升级后后续版本全部走 OSS。旧指针保持在 0.1.2，不随以后的 OSS 版本改变。
 
 ## 运行要求与边界
 
@@ -41,7 +43,15 @@ Release 签名从 `$QIREADER_SIGNING_DIR` 读取，默认是 `~/.local/share/qir
 ANDROID_HOME=/path/to/android-sdk node scripts/prepare-mobile-release.cjs
 ```
 
-脚本验证 APK 签名，生成 `artifacts/android-<版本>/` 下的 APK、android-update.json 和 SHA256SUMS，同时更新源码中的手机更新指针。准备好产物后创建 `android-v<版本>` Release 并上传三个文件，再推送更新指针；无需发布为桌面仓库的 latest。首次用户只需安装一次，以后从应用内更新。
+脚本验证固定发布签名，生成 `artifacts/android-<版本>/` 下的 APK、latest.json、android-update.json 和 SHA256SUMS。发布到已有 `xxs-apk` 桶的独立 `updates/qireader-filter/` 前缀：
+
+```sh
+ANDROID_HOME=/path/to/android-sdk node scripts/publish-mobile.cjs
+```
+
+发布器使用本机 ossutil 的私有凭据，不将 AccessKey 放进源码或 APK。先上传不可覆盖的版本 APK、校验文件和版本元数据，逐一通过国内公开地址回读校验 SHA-256，成功后才推进 latest.json，并再次回读确认；拒绝降级或修改已经发布的同一版本。版本文件长期缓存，latest.json 使用 no-cache/no-store。其他应用前缀和桶配置保持不动。
+
+以后只需更新版本、构建验收并运行发布器；不必再往 GitHub 上传 APK。Git 仍用于同步源码。0.1.2 额外保留的 GitHub 包仅用于旧更新器迁移。
 
 筛选脚本回归用隔离的手机尺寸浏览器运行，不连接真实账号：
 

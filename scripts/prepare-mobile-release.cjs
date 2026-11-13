@@ -23,13 +23,16 @@ const name = `QiReader-Filter-${version.versionName}.apk`;
 const sha256 = crypto.createHash('sha256').update(content).digest('hex');
 const info = {
   versionCode: version.versionCode, versionName: version.versionName,
-  url: `https://github.com/xxs9331/qireader-desktop/releases/download/android-v${version.versionName}/${name}`, sha256
+  url: `https://download.swlyes.top/updates/qireader-filter/${name}`, sha256
 };
 const directory = path.join(root, 'artifacts', `android-${version.versionName}`);
 fs.mkdirSync(directory, { recursive: true });
 fs.writeFileSync(path.join(directory, name), content);
 const json = JSON.stringify(info, null, 2) + '\n';
 fs.writeFileSync(path.join(directory, 'android-update.json'), json);
-fs.writeFileSync(path.join(root, 'mobile/android/update.json'), json);
+fs.writeFileSync(path.join(directory, 'latest.json'), json);
+// Old installed clients only accept GitHub URLs; this pointer is a one-time migration bridge.
+const legacy = { ...info, url: `https://github.com/xxs9331/qireader-desktop/releases/download/android-v${version.versionName}/${name}` };
+if (version.versionCode === 3) fs.writeFileSync(path.join(root, 'mobile/android/update.json'), JSON.stringify(legacy, null, 2) + '\n');
 fs.writeFileSync(path.join(directory, 'SHA256SUMS'), `${sha256}  ${name}\n`);
-console.log(`Prepared ${directory}; commit update.json and upload these three files to android-v${version.versionName}`);
+console.log(`Prepared ${directory}; publish to OSS, then advance latest.json after public byte verification`);
