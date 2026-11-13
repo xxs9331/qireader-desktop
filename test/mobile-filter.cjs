@@ -32,15 +32,30 @@ window.qireaderMobile={postMessage(raw){setTimeout(()=>{
         return route.fulfill({ status: 200, json: { result: {} } });
       }
       const body = fixture.html.replace('<meta charset="utf-8">', '<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">')
-        .replace('<button title="视图选项" id="options">视图选项</button>', '<nav id="original-nav" style="height:48px;display:flex;align-items:center"><span>全部订阅源</span><button title="视图选项" id="options">⋮</button></nav>');
+        .replace('<button title="视图选项" id="options">视图选项</button>', '<div data-focus-container="sidebar" style="position:fixed;left:-300px;top:0;width:280px"><nav style="height:56px">Sidebar</nav></div><nav id="original-nav" style="height:56px;width:100%;box-sizing:border-box;contain:content;display:flex;align-items:center;background:#fff"><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden">All feeds 11252</span><button style="flex-shrink:0">✓</button><button title="视图选项" id="options" style="flex-shrink:0">⋮</button></nav>');
       return route.fulfill({ contentType: 'text/html; charset=utf-8', body });
     });
     await context.addInitScript({ content: mock + script });
     const page = await context.newPage(); await page.goto('https://www.qireader.com/');
     await page.waitForFunction(() => window.nativeUser === 'alice' && window.prefs.magazine);
-    await page.waitForFunction(() => document.querySelector('#original-nav #qi-filter-controls'));
-    assert.equal(await page.locator('nav').count(), 1, 'A second app navigation bar was added');
+    await page.waitForFunction(() => document.querySelector('#original-nav #qi-filter-controls'), null, { timeout: 3000 });
+    const mainBarCount = () => page.locator('nav').evaluateAll(nodes => nodes.filter(node => node.getClientRects().length && !node.closest('[data-focus-container="sidebar"]')).length);
+    assert.equal(await mainBarCount(), 1, 'A second app navigation bar was added');
     assert.equal(await page.locator('#qi-filter-lamps span').count(), 5);
+    for (const width of [320, 390, 480]) {
+      await page.setViewportSize({ width, height: 844 });
+      const visible = await page.locator('#qi-filter-controls').evaluate(node => {
+        const nav = node.closest('nav').getBoundingClientRect();
+        return [...node.querySelectorAll('#qi-filter-lamps span,button')].every(item => {
+          const bounds = item.getBoundingClientRect();
+          return bounds.width > 0 && bounds.left >= nav.left && bounds.right <= nav.right && bounds.right <= innerWidth && node.contains(document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2));
+        });
+      });
+      assert.equal(visible, true, `Lamps or settings were clipped at ${width}px`);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => { document.getElementById('original-nav').style.background = '#111'; document.getElementById('original-nav').style.color = '#eee'; });
+    assert.equal(await page.locator('#qi-filter-controls button').evaluate(node => getComputedStyle(node).color), 'rgb(238, 238, 238)');
     await page.locator('#qi-filter-controls button').click();
     await page.waitForFunction(() => window.settingsOpened);
     const click = id => page.evaluate(id => document.querySelector('[data-is-entry="'+id+'"] a').click(), id);
@@ -64,10 +79,17 @@ window.qireaderMobile={postMessage(raw){setTimeout(()=>{
     assert.equal(await page.locator('#portal').textContent(), '', 'Context menu remained after the save');
     await page.evaluate(() => document.querySelector('#original-nav').outerHTML = '<nav id="original-nav" style="height:48px;display:flex;align-items:center"><span>新的订阅源</span></nav>');
     await page.waitForFunction(() => document.querySelector('#original-nav #qi-filter-controls'));
-    assert.equal(await page.locator('nav').count(), 1, 'SPA navigation duplicated the toolbar');
+    assert.equal(await mainBarCount(), 1, 'SPA navigation duplicated the toolbar');
+    await page.evaluate(() => {
+      const old = document.getElementById('original-nav'); old.id = 'stale-nav'; old.style.display = 'none';
+      document.body.insertAdjacentHTML('afterbegin', '<nav id="original-nav" style="height:48px;display:flex"><span>Active feed</span></nav>');
+    });
+    await page.waitForFunction(() => document.querySelector('#original-nav #qi-filter-controls'));
+    assert.equal(await mainBarCount(), 1, 'Hidden cached navigation took the controls');
+    await page.evaluate(() => document.getElementById('stale-nav').remove());
     await page.evaluate(() => document.getElementById('original-nav').remove());
     await page.waitForFunction(() => document.querySelector('#qi-filter-fallback #qi-filter-controls'));
-    assert.equal(await page.locator('nav').count(), 1);
+    assert.equal(await mainBarCount(), 1);
     await page.evaluate(() => document.body.insertAdjacentHTML('afterbegin', '<nav id="original-nav" style="height:48px;display:flex"><span>全部订阅源</span></nav>'));
     await page.waitForFunction(() => document.querySelector('#original-nav #qi-filter-controls') && !document.getElementById('qi-filter-fallback'));
     await click('tail'); await count(4);

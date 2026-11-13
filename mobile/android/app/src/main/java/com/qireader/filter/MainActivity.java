@@ -7,9 +7,11 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Build;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -23,6 +25,10 @@ import android.widget.TextView;
 import android.widget.Toast;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.ViewCompat;
+import androidx.core.graphics.Insets;
 import org.json.JSONObject;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
@@ -40,6 +46,17 @@ public final class MainActivity extends Activity {
     private String origin = "https://www.qireader.com";
     private boolean storageFailed;
     private Updates updates;
+    private FrameLayout root;
+    private void configureSystemBars() {
+        root.setBackgroundColor(Color.BLACK);
+        getWindow().getDecorView().setBackgroundColor(Color.BLACK);
+        if (Build.VERSION.SDK_INT < 35) {
+            getWindow().setStatusBarColor(Color.BLACK); getWindow().setNavigationBarColor(Color.BLACK);
+        }
+        androidx.core.view.WindowInsetsControllerCompat bars = WindowCompat.getInsetsController(getWindow(), root);
+        bars.setAppearanceLightStatusBars(false); bars.setAppearanceLightNavigationBars(false);
+        bars.show(WindowInsetsCompat.Type.systemBars());
+    }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private TextView text(String value, int size) {
@@ -84,12 +101,15 @@ public final class MainActivity extends Activity {
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         prefs = getSharedPreferences("filter", MODE_PRIVATE);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
         String savedOrigin = prefs.getString("origin", origin);
         if (ORIGINS.contains(savedOrigin)) origin = savedOrigin;
-        FrameLayout root = new FrameLayout(this);
+        root = new FrameLayout(this);
         LinearLayout column = new LinearLayout(this); column.setOrientation(LinearLayout.VERTICAL);
         root.addView(column, new FrameLayout.LayoutParams(-1, -1));
         error = text("", 13); error.setTextColor(0xff993333); error.setVisibility(View.GONE);
+        error.setBackgroundColor(Color.WHITE);
         error.setOnClickListener(v -> new AlertDialog.Builder(this).setItems(new String[]{"重试", "设置"}, (dialog, choice) -> {
             if (choice == 0) { error.setVisibility(View.GONE); web.reload(); } else settings();
         }).show()); column.addView(error);
@@ -101,11 +121,14 @@ public final class MainActivity extends Activity {
         GradientDrawable border = new GradientDrawable(); border.setColor(Color.TRANSPARENT); border.setStroke(dp(1), 0x99ffffff); border.setCornerRadius(dp(4)); next.setBackground(border);
         overlay.addView(next); shade = overlay; shade.setVisibility(View.GONE); root.addView(shade, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
+        configureSystemBars();
         updates = new Updates(this);
-        root.setOnApplyWindowInsetsListener((v, insets) -> {
-            v.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(), insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
-            return insets.consumeSystemWindowInsets();
+        ViewCompat.setOnApplyWindowInsetsListener(root, (v, insets) -> {
+            Insets safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout() | WindowInsetsCompat.Type.ime());
+            v.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+            return WindowInsetsCompat.CONSUMED;
         });
+        ViewCompat.requestApplyInsets(root);
         web.getSettings().setJavaScriptEnabled(true); web.getSettings().setDomStorageEnabled(true);
         web.getSettings().setAllowFileAccess(false); web.getSettings().setAllowContentAccess(false);
         web.getSettings().setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
@@ -201,7 +224,7 @@ public final class MainActivity extends Activity {
         if (web.canGoBack()) web.goBack(); else super.onBackPressed();
     }
     @Override protected void onPause() { super.onPause(); web.onPause(); CookieManager.getInstance().flush(); }
-    @Override protected void onResume() { super.onResume(); if (web != null) { web.onResume(); web.evaluateJavascript("window.qiFilter?.refresh()", null); } }
+    @Override protected void onResume() { super.onResume(); if (web != null) { configureSystemBars(); web.onResume(); web.evaluateJavascript("window.qiFilter?.refresh()", null); } }
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
         if (request == Updates.INSTALL_PERMISSION && updates != null && getPackageManager().canRequestPackageInstalls()) updates.install();

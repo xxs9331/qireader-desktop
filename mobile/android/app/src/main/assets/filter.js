@@ -61,7 +61,7 @@
   }
   const dismiss = node => (node || document.activeElement || document.body)
     .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  let controls;
+  let controls, currentNav;
   function renderLamps() {
     if (!controls) return;
     const lamps = controls.querySelector('[role="progressbar"]');
@@ -71,7 +71,7 @@
       const lamp = document.createElement('span'); lamp.setAttribute('aria-hidden', 'true'); return lamp;
     }));
     for (const [index, lamp] of [...lamps.children].entries()) lamp.classList.toggle('lit', index < count);
-    lamps.setAttribute('aria-valuemin', '0'); lamps.setAttribute('aria-valuemax', target); lamps.setAttribute('aria-valuenow', count);
+    lamps.setAttribute('aria-valuemin', '0'); lamps.setAttribute('aria-valuemax', target); lamps.setAttribute('aria-valuenow', Math.min(count, target));
     lamps.setAttribute('aria-label', `本轮已添加 ${count} / ${target} 篇`);
   }
   function mergeNavigation() {
@@ -82,12 +82,24 @@
       settings.addEventListener('click', () => { void send('settings').catch(error => report(error.message)); });
       controls.append(lamps, settings); renderLamps();
     }
-    const nav = [...document.querySelectorAll('nav')].find(node => node.id !== 'qi-filter-fallback' && !node.closest('aside,#portal,[data-is-entry]') &&
-      node.getClientRects().length && node.getBoundingClientRect().height <= 100 && node.getBoundingClientRect().top < 100);
+    const cachedBounds = currentNav?.getBoundingClientRect();
+    const cachedVisible = currentNav?.isConnected && currentNav.getClientRects().length && cachedBounds.right > 0 && cachedBounds.left < innerWidth && getComputedStyle(currentNav).visibility !== 'hidden';
+    const nav = cachedVisible ? currentNav : [...document.querySelectorAll('nav')].find(node => {
+      if (node.id === 'qi-filter-fallback' || node.closest('aside,#portal,[data-is-entry],[data-focus-container="sidebar"]')) return false;
+      const bounds = node.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0 || bounds.height > 100 || bounds.top < 0 || bounds.top >= 100 || bounds.left < 0 || bounds.right > innerWidth + 1) return false;
+      return node.contains(document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2));
+    });
     const fallback = document.getElementById('qi-filter-fallback');
     if (nav) {
+      if (nav !== currentNav) {
+        currentNav?.removeAttribute('data-qi-filter-nav'); currentNav?.removeAttribute('data-qi-filter-static');
+        currentNav = nav; nav.setAttribute('data-qi-filter-nav', 'true');
+        if (getComputedStyle(nav).position === 'static') nav.setAttribute('data-qi-filter-static', 'true');
+      }
       if (controls.parentElement !== nav) nav.append(controls);
-      fallback?.remove(); document.documentElement.classList.remove('qi-filter-fallback');
+      fallback?.remove();
+      if (document.documentElement.classList.contains('qi-filter-fallback')) document.documentElement.classList.remove('qi-filter-fallback');
     } else if (!fallback) {
       const bar = document.createElement('nav'); bar.id = 'qi-filter-fallback'; bar.append(controls);
       document.body.prepend(bar); document.documentElement.classList.add('qi-filter-fallback');
@@ -199,7 +211,8 @@
   function routeChanged() {
     const current = location.pathname;
     if (/\/(?:entries|tags)\//.test(current)) { location.replace('/'); return; }
-    document.documentElement.classList.toggle('qi-filter-mode', feedRoute());
+    const filtering = feedRoute();
+    if (document.documentElement.classList.contains('qi-filter-mode') !== filtering) document.documentElement.classList.toggle('qi-filter-mode', filtering);
     mergeNavigation();
     if (current !== route) {
       route = current; epoch++; configured = '';
@@ -215,15 +228,20 @@
       [data-filter-saving="true"]{opacity:.5}[data-filter-added="true"]{box-shadow:inset 2px 0 #888}
       html.qi-filter-mode [data-is-entry]{cursor:pointer;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;user-select:none}
       html.qi-filter-native-menu #portal,html.qi-filter-native-menu #portal *{visibility:hidden!important;pointer-events:none!important}
-      #qi-filter-controls{display:flex;align-items:center;gap:8px;flex:0 0 auto;margin-left:auto;padding:0 6px}
-      #qi-filter-controls button{display:block!important;border:0;background:transparent;color:inherit;padding:8px;font:20px sans-serif;-webkit-tap-highlight-color:transparent}
-      #qi-filter-lamps{display:flex;gap:4px;max-width:90px;overflow-x:auto;scrollbar-width:none;padding:4px 0}
-      #qi-filter-lamps span{display:block;width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:#d4d4d4}
+      [data-qi-filter-nav]{padding-right:110px!important;box-sizing:border-box!important}
+      [data-qi-filter-static]{position:relative!important}
+      #qi-filter-controls{position:absolute;right:8px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:flex-end;gap:6px;width:100px;max-width:calc(100vw - 16px)}
+      #qi-filter-controls button{display:block!important;flex:0 0 28px;box-sizing:border-box;width:28px;margin:0;border:0;background:transparent;color:inherit;padding:4px;font:20px sans-serif;-webkit-tap-highlight-color:transparent}
+      #qi-filter-lamps{display:flex;gap:4px;max-width:64px;overflow-x:auto;scrollbar-width:none;padding:4px 0}
+      #qi-filter-lamps span{display:block;width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:#888}
       #qi-filter-lamps span.lit{background:#5b947e}
       #qi-filter-fallback{position:fixed;top:0;left:0;right:0;height:44px;display:flex;align-items:center;background:Canvas;color:CanvasText;z-index:100}
       html.qi-filter-fallback body{padding-top:44px}`;
     document.head.append(style);
-    new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(routeChanged, 80); }).observe(document.body, { childList: true, subtree: true });
+    const schedule = () => { clearTimeout(timer); timer = setTimeout(routeChanged, 80); };
+    new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('resize', schedule);
+    document.addEventListener('scroll', schedule, { capture: true, passive: true });
     window.addEventListener('popstate', routeChanged);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh().catch(() => {}); });
     routeChanged();
