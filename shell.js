@@ -59,10 +59,6 @@ window.desktop.onState(state => {
   document.querySelector('header').inert = Boolean(state.roundBlocked);
   $('splitter').inert = Boolean(state.roundBlocked);
   if (state.roundBlocked) {
-    $('round-description').textContent = state.screening ? `${state.round.total} 篇文章，已收进稍后阅读。` : `第 ${state.round.total} 篇已打开，本轮的灯全部点亮。`;
-    if ($('round-lights').children.length !== state.round.total) $('round-lights').replaceChildren(...Array.from({ length: state.round.total }, () => {
-      const light = document.createElement('span'); return light;
-    }));
     $('round-error').textContent = state.error || '';
     if (!wasBlocked) $('round-complete').querySelector('section').focus();
   }
