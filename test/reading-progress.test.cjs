@@ -9,6 +9,42 @@ const now = +new Date(2026, 9, 28, 12);
 const today = boundaries(now).today;
 const row = (id, crawledAt = today + 1000) => ({ id, crawledAt, status: 1, tagIds: ['later'], timestamp: '9007199254740993999' });
 
+test('lamp rounds count confirmed reading and saves independently, deduplicate, reset and survive restart', async t => {
+  const { store, server, options } = setup(t);
+  server.entries = [row('a'), row('b')]; await store.refresh(origin);
+  const daily = store.screeningSummary(), key = store.active;
+  const token = await store.track(origin, 'a');
+  assert.equal(store.roundSummary('reading').done, 0);
+  store.complete(token); store.complete(token);
+  assert.equal(store.roundSummary('reading').done, 1);
+  assert.equal(store.roundSummary('saving').done, 0);
+  store.addedToLater(key, 'a'); store.addedToLater(key, 'a');
+  assert.equal(store.roundSummary('saving').done, 1);
+  assert.deepEqual(store.screeningSummary(), daily);
+  store.configureRound({ kind: 'saving', target: 2 });
+  store.addedToLater(key, 'b'); store.addedToLater(key, 'c');
+  assert.equal(store.roundSummary('saving').done, 2);
+  const restored = new ReadingProgress(options); await restored.refresh(origin);
+  assert.equal(restored.roundSummary('reading').done, 1); assert.equal(restored.roundSummary('saving').done, 2);
+  restored.configureRound({ kind: 'saving', target: 2, reset: true });
+  assert.equal(restored.roundSummary('saving').done, 0); assert.equal(restored.roundSummary('reading').done, 1);
+  restored.addedToLater(key, 'a'); assert.equal(restored.roundSummary('saving').done, 1);
+  server.user = 'bob'; await restored.refresh(origin);
+  restored.addedToLater(key, 'foreign');
+  assert.equal(restored.roundSummary('saving').done, 0);
+});
+test('invalid round targets and write failures preserve progress and legacy statistics', async t => {
+  const { store, options } = setup(t); await store.refresh(origin);
+  store.addedToLater(store.active, 'saved');
+  const before = fs.readFileSync(options.file, 'utf8');
+  for (const target of [0, 101, 1.5, '10']) assert.throws(() => store.configureRound({ kind: 'saving', target }));
+  assert.throws(() => store.configureRound({ kind: 'other', target: 10 }));
+  assert.equal(fs.readFileSync(options.file, 'utf8'), before);
+  store.file = path.join(path.dirname(options.file), 'missing', 'progress.json');
+  assert.throws(() => store.addedToLater(store.active, 'failed'));
+  assert.equal(store.roundSummary('saving').done, 1);
+});
+
 test('screening counts confirmed unique IDs locally and preserves independent reading goals across restart', async t => {
   const { store, server, options } = setup(t);
   assert.equal(store.screeningSummary().ready, false);

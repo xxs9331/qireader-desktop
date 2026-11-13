@@ -9,6 +9,19 @@
 </head>
 <body>
   <h1>设置</h1>
+  <section aria-labelledby="progress-style-heading">
+    <h2 id="progress-style-heading">进度样式</h2>
+    <label for="progress-style">顶部显示</label>
+    <select id="progress-style"><option value="lamps">点灯（本轮任务）</option><option value="bar">原进度条（日／周统计）</option></select>
+    <p id="progress-style-result" role="status"></p>
+    <form id="round-goals">
+      <label for="reading-round-target">每轮阅读篇数</label><input id="reading-round-target" type="number" min="1" max="100" required value="10">
+      <label for="saving-round-target">每轮添加到稍后阅读篇数</label><input id="saving-round-target" type="number" min="1" max="100" required value="10">
+      <p>每篇确认完成后亮一盏灯，重复或失败不计数。两种任务独立，关闭重开继续本轮；点击顶部「新一轮」重新开始，不改原来的日／周统计。目标较多时灯可横向滚动。</p>
+      <button id="save-round-goals" type="submit" disabled>保存本轮目标</button>
+      <p id="round-goals-result" role="status"></p>
+    </form>
+  </section>
   <section aria-labelledby="screening-heading">
   <h2 id="screening-heading">订阅筛选目标</h2>
   <form id="screening-goal">

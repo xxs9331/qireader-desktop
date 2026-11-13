@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>QiReader Desktop 0.15.0</title>
+  <title>QiReader Desktop</title>
   <link rel="stylesheet" href="shell.css">
 </head>
 <body>
@@ -17,6 +17,10 @@
     </div>
     <div class="toolbar-center">
       <div id="reading-status">
+        <div id="lamp-round" hidden>
+          <div class="lamp-caption"><span id="lamp-count" role="status"></span><button id="round-reset" title="仅重新开始当前模式的本轮点灯，不清除历史统计">新一轮</button></div>
+          <div id="progress-lamps" role="progressbar" aria-label="本轮完成进度" aria-valuemin="0"></div>
+        </div>
         <div class="progress-line">
           <button id="progress-period" title="切换今日／本周／全部" aria-label="切换今日／本周／全部统计">今日</button>
           <button id="progress-count" title="点击重新同步统计" aria-label="重新同步阅读统计">同步中…</button>

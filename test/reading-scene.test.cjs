@@ -69,6 +69,17 @@ test('legacy drawer scenes fall back to split without losing reading history or 
   assert.throws(() => restored.configure({ mode: 'drawer' }));
   restored.flush(); assert.equal('mode' in JSON.parse(fs.readFileSync(file, 'utf8')).layout, false);
 });
+test('lamp style migrates old settings, can switch back to the original bar, and persists', t => {
+  const { scene, file } = fixture(t);
+  const old = structuredClone(scene.data); delete old.layout.progressStyle;
+  fs.writeFileSync(file, JSON.stringify(old));
+  const migrated = new ReadingScene(file);
+  assert.equal(migrated.summary().progressStyle, 'lamps'); assert.equal(migrated.error, '');
+  migrated.configure({ progressStyle: 'bar' });
+  assert.equal(new ReadingScene(file).summary().progressStyle, 'bar');
+  assert.throws(() => migrated.configure({ progressStyle: 'invalid' }));
+  assert.equal(new ReadingScene(file).summary().progressStyle, 'bar');
+});
 test('scene history is bounded; credentials, non-web URLs, unknown pages and invalid scroll positions are rejected', t => {
   const { scene } = fixture(t);
   for (const invalid of ['file:///etc/passwd', 'javascript:alert(1)', 'https://user:pass@example.com/a']) scene.visit(invalid);

@@ -1,4 +1,23 @@
 const $ = id => document.getElementById(id);
+let currentProgressStyle = 'lamps';
+function showRounds(rounds) {
+  for (const kind of ['reading', 'saving']) $(`${kind}-round-target`).value = rounds[kind].total;
+  $('save-round-goals').disabled = !rounds.reading.ready;
+}
+$('progress-style').addEventListener('change', async () => {
+  const result = await request('scene-configure', { progressStyle: $('progress-style').value });
+  if (result.ok) currentProgressStyle = result.scene.progressStyle;
+  else $('progress-style').value = currentProgressStyle;
+  $('progress-style-result').textContent = result.ok ? '样式已切换并保存。' : result.error;
+});
+$('round-goals').addEventListener('submit', async event => {
+  event.preventDefault(); $('save-round-goals').disabled = true;
+  for (const kind of ['reading', 'saving']) {
+    const result = await request('round-configure', { kind, target: Number($(`${kind}-round-target`).value) });
+    if (!result.ok) { $('round-goals-result').textContent = result.error; $('save-round-goals').disabled = false; return; }
+  }
+  $('save-round-goals').disabled = false; $('round-goals-result').textContent = '本轮目标已保存，已有进度保留。';
+});
 $('export-logs').addEventListener('click', async () => {
   $('export-logs').disabled = true;
   const result = await request('logs-export');
@@ -17,6 +36,8 @@ $('screening-goal').addEventListener('submit', async event => {
   else $('screening-result').textContent = result.error;
 });
 function showScene(info) {
+  currentProgressStyle = info.progressStyle;
+  $('progress-style').value = info.progressStyle;
   $('resume-reading').checked = info.resume;
   $('scene-result').textContent = info.error || ''; $('save-scene').disabled = false;
 }
@@ -134,5 +155,5 @@ $('clear').addEventListener('click', async () => {
   else { $('result').classList.remove('success'); $('result').textContent = result.error; }
 });
 request('settings-info').then(result => {
-  if (result.ok) { show(result.info); showGoals(result.goals); showProxy(result.proxy); showShortcuts(result.shortcuts); showScene(result.scene); showScreening(result.screening); } else $('result').textContent = result.error;
+  if (result.ok) { show(result.info); showGoals(result.goals); showProxy(result.proxy); showShortcuts(result.shortcuts); showScene(result.scene); showScreening(result.screening); showRounds(result.rounds); } else $('result').textContent = result.error;
 });

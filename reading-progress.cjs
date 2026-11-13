@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const { readerURL } = require('./policy.cjs');
+const { validRounds, countRound } = require('./round-progress.cjs');
 const DAY = 86400000;
 const SCAN_COOLDOWN = 30 * 60000;
 const DAILY_PAGE_LIMIT = 100;
@@ -32,7 +33,7 @@ class ReadingProgress {
     try {
       const data = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (data.version !== 1 || !data.accounts || typeof data.accounts !== 'object' || Array.isArray(data.accounts) ||
-          !Object.values(data.accounts).every(account => Number.isFinite(account.startedAt) && Number.isFinite(account.updatedAt) && validScreening(account.screening) &&
+          !Object.values(data.accounts).every(account => Number.isFinite(account.startedAt) && Number.isFinite(account.updatedAt) && validScreening(account.screening) && validRounds(account.rounds) &&
             (!account.goals || ['today', 'week'].every(period => !account.goals[period] || validGoal(account.goals[period]))) &&
             Array.isArray(account.entries) && account.entries.every(entry => validEntry(entry) && typeof entry.done === 'boolean' &&
               (entry.completedAt === undefined || (Number.isSafeInteger(entry.completedAt) && entry.completedAt > 0))))) {
@@ -95,12 +96,13 @@ class ReadingProgress {
     if (typeof tag?.id !== 'string' || !tag.id) throw new Error('未找到稍后阅读标签');
     return { origin, user, key, tag: tag.id };
   }
-  save(key, entries, synced = false) {
+  save(key, entries, synced = false, rounds = this.data.accounts[key]?.rounds) {
     if (this.storageError) throw new Error(this.storageError);
     const previous = this.data.accounts[key];
     const completions = new Map((previous?.entries || []).map(entry => [entry.id, entry.completedAt]));
     const account = {
       ...previous,
+      ...(rounds ? { rounds } : {}),
       startedAt: previous?.startedAt || this.now(), updatedAt: synced ? this.now() : previous?.updatedAt || 0,
       entries: entries.map(entry => {
         const completedAt = entry.completedAt ?? completions.get(entry.id);
@@ -139,6 +141,24 @@ class ReadingProgress {
     const total = value?.target || 100;
     return { ready: Boolean(this.active) && !this.storageError, done, total, remaining: Math.max(0, total - done),
       error: this.screeningError || this.storageError || '', reached: done >= total };
+  }
+  roundSummary(kind) {
+    const value = this.data.accounts[this.active]?.rounds?.[kind] || { target: 10, ids: [] };
+    return { ready: Boolean(this.active) && !this.storageError, total: value.target, done: value.ids.length, error: this.storageError || '' };
+  }
+  configureRound({ kind, target, reset = false } = {}) {
+    if (!['reading', 'saving'].includes(kind) || !Number.isInteger(target) || target < 1 || target > 100 || typeof reset !== 'boolean') throw Error('每轮目标须为 1–100 的整数');
+    if (!this.active) throw Error('请登录并等待账号识别后设置目标');
+    const account = this.data.accounts[this.active] || { startedAt: this.now(), updatedAt: 0, entries: [] };
+    const previous = account.rounds?.[kind];
+    const rounds = { ...account.rounds, [kind]: { target, ids: reset ? [] : previous?.ids || [] } };
+    this.save(this.active, account.entries, false, rounds);
+  }
+  addedToLater(key, id) {
+    if (!key || key !== this.active) return;
+    const account = this.data.accounts[key] || { startedAt: this.now(), updatedAt: 0, entries: [] };
+    const rounds = countRound(account.rounds, 'saving', id);
+    if (rounds !== account.rounds) this.save(key, account.entries, false, rounds);
   }
   setScreeningGoal(target) {
     if (!Number.isInteger(target) || target < 1 || target > 10000) throw Error('筛选目标须为 1–10000 的整数');
@@ -241,19 +261,20 @@ class ReadingProgress {
       const done = !entry.tagIds.includes(context.tag);
       const previous = this.data.accounts[context.key]?.entries.find(item => item.id === id);
       if (!done || previous) this.record(context.key, { id, crawledAt: entry.crawledAt, done,
-        ...(done && !previous?.done ? { completedAt: this.now() } : {}) });
+        ...(done && !previous?.done ? { completedAt: this.now() } : {}) },
+      done && !previous?.done ? countRound(this.data.accounts[context.key]?.rounds, 'reading', id) : undefined);
     } catch (error) { this.fail(error); }
   }
-  record(key, entry) {
+  record(key, entry, rounds) {
     const entries = (this.data.accounts[key]?.entries || []).filter(item => item.id !== entry.id);
-    this.save(key, [...entries, entry]);
+    this.save(key, [...entries, entry], false, rounds);
     this.changes.set(`${key}|${entry.id}`, { key, entry, revision: ++this.revision });
   }
   complete(token, confirmedAt = this.now()) {
     const entry = this.data.accounts[token.key]?.entries.find(entry => entry.id === token.id);
     if (!entry) return;
     const completedAt = entry.completedAt >= token.startedAt ? entry.completedAt : confirmedAt;
-    try { this.record(token.key, { ...entry, done: true, completedAt }); }
+    try { this.record(token.key, { ...entry, done: true, completedAt }, entry.done ? this.data.accounts[token.key].rounds : countRound(this.data.accounts[token.key].rounds, 'reading', token.id)); }
     catch (error) { this.fail(error); }
   }
   summary(period = 'today') {

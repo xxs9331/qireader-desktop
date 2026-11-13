@@ -1,12 +1,13 @@
 const fs = require('node:fs');
 const { webURL, readerURL } = require('./policy.cjs');
-const defaults = { side: 'left', width: 280, hidden: false, readerZoom: 100, period: 'today', resume: true };
+const defaults = { side: 'left', width: 280, hidden: false, readerZoom: 100, period: 'today', resume: true, progressStyle: 'lamps' };
 const zoom = value => Number.isInteger(value) && value >= 50 && value <= 200;
 const position = value => Number.isFinite(value) && value >= 0 && value <= 1e8;
 function layout(value) {
+  value = { ...value, progressStyle: value?.progressStyle ?? defaults.progressStyle };
   if (!value || !['left', 'right'].includes(value.side) ||
       !Number.isInteger(value.width) || value.width < 180 || value.width > 6000 || typeof value.hidden !== 'boolean' ||
-      !zoom(value.readerZoom) || !['today', 'week', 'all'].includes(value.period) || typeof value.resume !== 'boolean') throw Error('阅读布局设置无效');
+      !zoom(value.readerZoom) || !['today', 'week', 'all'].includes(value.period) || typeof value.resume !== 'boolean' || !['bar', 'lamps'].includes(value.progressStyle)) throw Error('阅读布局设置无效');
   return Object.fromEntries(Object.keys(defaults).map(key => [key, value[key]]));
 }
 function listURL(value) {

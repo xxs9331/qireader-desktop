@@ -39,3 +39,13 @@ body.previewing .preview { display: block; }
 .list-right #reader-preview { left: auto; right: 0; }
 .list-right #original-preview { left: 0; }
 .list-right main { left: 0; right: var(--list-width); }
+/* Keep the original progress markup and behavior available when switching styles. */
+#reading-status.lamp-style > .progress-line, #reading-status.lamp-style > progress { display: none; }
+#lamp-round[hidden] { display: none; }
+.lamp-caption { display: flex; align-items: center; justify-content: center; gap: 8px; height: 20px; font-size: 12px; }
+.lamp-caption button { padding: 0 5px; font-size: 10px; min-height: 0; }
+#progress-lamps { display: flex; justify-content: safe center; gap: clamp(2px, .4vw, 5px); padding: 2px 1px; max-width: 100%; overflow-x: auto; scrollbar-width: thin; }
+.progress-lamp { width: clamp(8px, .75vw, 11px); height: clamp(8px, .75vw, 11px); flex: 0 0 clamp(8px, .75vw, 11px); border-radius: 50%; box-sizing: border-box; background: #e1dce9; border: 1px solid #bdb2cd; }
+.lamp-caption #lamp-count { overflow: hidden; text-overflow: ellipsis; }
+.lamp-caption button { flex-shrink: 0; }
+.progress-lamp.lit { background: #53d8b2; border-color: #259b7b; box-shadow: 0 0 5px #53d8b280; }

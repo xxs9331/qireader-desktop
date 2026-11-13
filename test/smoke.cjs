@@ -168,6 +168,9 @@ window.selectArticle = (id, delay = 0) => {
     await until(() => desktop.progress.screeningSummary().ready, 'Screening account was not verified');
     if (process.env.QIREADER_TEST_PHASE === 'screening-restart') {
       assert.equal(desktop.progress.screeningSummary().total, 3); assert.equal(desktop.progress.screeningSummary().done, 1);
+      assert.equal(desktop.progress.roundSummary('saving').done, 3);
+      assert.equal(desktop.progress.roundSummary('saving').total, 12);
+      assert.equal(desktop.progress.roundSummary('reading').total, 5);
       console.log('PASS: screening target and confirmed daily IDs survive restart independently');
       win.close(); await until(() => win.isDestroyed(), 'Screening restart window did not close'); app.quit(); return;
     }
@@ -183,6 +186,7 @@ window.selectArticle = (id, delay = 0) => {
     assert.equal(reader.getBounds().width, win.getContentSize()[0]); assert.equal(desktop.original.getVisible(), false);
     assert.equal(preloaded.size, 0); assert.equal(navigation.getVisible(), false);
     assert.equal(await shellContents.executeJavaScript('document.getElementById("progress-period").textContent'), '今日筛选');
+    assert.equal(await shellContents.executeJavaScript('document.querySelectorAll("#progress-lamps .progress-lamp").length'), 10);
     assert.equal(await rc.executeJavaScript('getComputedStyle(document.querySelector(".summary")).webkitLineClamp'), '3');
     screeningFixture.hold();
     await rc.executeJavaScript('document.getElementById("items").scrollTop=100;document.getElementById("items").dispatchEvent(new Event("scroll"))');
@@ -192,6 +196,7 @@ window.selectArticle = (id, delay = 0) => {
     await until(() => desktop.progress.screeningSummary().done === 1, 'Confirmed native scroll did not update progress');
     await rc.executeJavaScript('document.getElementById("items").dispatchEvent(new Event("scroll"))');
     await pause(100); assert.equal(desktop.progress.screeningSummary().done, 1);
+    assert.equal(desktop.progress.roundSummary('saving').done, 0, 'Marking read must not light a saving lamp');
     await rc.executeJavaScript('document.getElementById("items").scrollTop=350;document.getElementById("items").dispatchEvent(new Event("scroll"))');
     await until(() => screeningFixture.calls.reads.some(body => body.entryIds.includes('screen-b')), 'Failed scroll fixture did not run');
     await pause(100); assert.equal(desktop.progress.screeningSummary().done, 1, 'Rejected read was counted');
@@ -199,9 +204,11 @@ window.selectArticle = (id, delay = 0) => {
     await until(() => rc.executeJavaScript('document.querySelector(\'[data-is-entry="screen-a"]\').getAttribute("data-desktop-added") === "true"'), 'Click did not save to Read Later');
     await rc.executeJavaScript('document.querySelector(\'[data-is-entry="screen-a"] a\').click();document.querySelector(\'[data-is-entry="already"] a\').click()');
     await pause(150); assert.deepEqual(screeningFixture.calls.adds, ['screen-a']); assert.deepEqual(confirmedRemovals, []);
+    await until(() => shellContents.executeJavaScript('document.querySelectorAll("#progress-lamps .lit").length===1'), 'Confirmed save did not light exactly one lamp');
     await rc.executeJavaScript('document.querySelector(\'[data-is-entry="bad"] a\').click()');
     await until(() => shellContents.executeJavaScript('document.getElementById("error").textContent.includes("加入稍后阅读未获服务器确认")'), 'Rejected add was not reported');
     assert.equal(await rc.executeJavaScript('document.querySelector(\'[data-is-entry="bad"]\').hasAttribute("data-desktop-added")'), false);
+    assert.equal(desktop.progress.roundSummary('saving').done, 1, 'Rejected save must not light a lamp');
     await rc.executeJavaScript('document.querySelector(\'[data-is-entry="bad"] a\').click()');
     await until(() => rc.executeJavaScript('document.querySelector(\'[data-is-entry="bad"]\').hasAttribute("data-desktop-added")'), 'Explicit retry did not save the rejected item');
     await rc.executeJavaScript('document.querySelector(\'[data-is-entry="menu-only"] a\').click()');
@@ -209,6 +216,22 @@ window.selectArticle = (id, delay = 0) => {
     await rc.executeJavaScript('document.querySelector(\'[data-is-entry="menu-only"] a\').click()');
     await pause(150); assert.equal(screeningFixture.calls.adds.filter(id => id === 'menu-only').length, 1);
     assert.deepEqual(confirmedRemovals, [], 'Repeated context-menu save must not remove an existing bookmark');
+    await until(() => shellContents.executeJavaScript('document.querySelectorAll("#progress-lamps .lit").length===3'), 'Saving lamps did not count success/retry/menu exactly once');
+    const lampSettings = await openTestSettings();
+    await lampSettings.webContents.executeJavaScript('document.getElementById("progress-style").value="bar";document.getElementById("progress-style").dispatchEvent(new Event("change"))');
+    await until(() => shellContents.executeJavaScript('document.getElementById("lamp-round").hidden && getComputedStyle(document.getElementById("reading-progress")).display!=="none"'), 'Original style did not return');
+    await lampSettings.webContents.executeJavaScript('document.getElementById("progress-style").value="lamps";document.getElementById("progress-style").dispatchEvent(new Event("change"))');
+    await until(() => shellContents.executeJavaScript('!document.getElementById("lamp-round").hidden'), 'Lamp style did not return');
+    await lampSettings.webContents.executeJavaScript('document.getElementById("reading-round-target").value=5;document.getElementById("saving-round-target").value=5;document.getElementById("round-goals").requestSubmit()');
+    await until(() => shellContents.executeJavaScript('document.querySelectorAll("#progress-lamps .progress-lamp").length===5'), 'Custom five-lamp goal did not apply');
+    await lampSettings.webContents.executeJavaScript('document.getElementById("saving-round-target").value=12;document.getElementById("round-goals").requestSubmit()');
+    await until(() => shellContents.executeJavaScript('document.querySelectorAll("#progress-lamps .progress-lamp").length===12 && document.querySelectorAll("#progress-lamps .lit").length===3'), 'Twelve lamps did not preserve three completed saves');
+    assert.equal(desktop.progress.roundSummary('reading').total, 5);
+    lampSettings.close();
+    await shellContents.executeJavaScript('document.getElementById("error").click()');
+    await until(() => shellContents.executeJavaScript('!document.getElementById("reading-status").hidden && !document.getElementById("lamp-round").hidden'), 'Lamp row is not visible');
+    fs.mkdirSync(path.join(__dirname, '..', 'artifacts'), { recursive: true });
+    fs.writeFileSync(path.join(__dirname, '..', 'artifacts', `lamps-${process.platform}.png`), (await shellContents.capturePage()).toPNG());
     assert.equal(await rc.executeJavaScript('window.nativeOpened'), false);
     assert.equal(originalRequests.size, requestsBefore); assert.equal(streamRequests, scansBefore);
     assert.equal(desktop.progress.summary().done, readingBefore);
@@ -455,10 +478,10 @@ window.selectArticle = (id, delay = 0) => {
   assert.equal((await keyboardSettings.webContents.executeJavaScript('desktop.request("settings-info")')).shortcuts.bindings.next, 'Space');
   await keyboardSettings.webContents.executeJavaScript('document.getElementById("shortcut-next").focus()');
   await pressKey(keyboardSettings.webContents, 'N');
-  assert.equal(await keyboardSettings.webContents.executeJavaScript('document.getElementById("shortcut-next").value'), 'N');
+  await until(() => keyboardSettings.webContents.executeJavaScript('document.getElementById("shortcut-next").value === "N"'), 'Shortcut capture did not receive N');
   await keyboardSettings.webContents.executeJavaScript('document.getElementById("shortcut-previous").focus()');
   await pressKey(keyboardSettings.webContents, 'Left', ['alt']);
-  assert.equal(await keyboardSettings.webContents.executeJavaScript('document.getElementById("shortcut-previous").value'), 'Alt+ArrowLeft');
+  await until(() => keyboardSettings.webContents.executeJavaScript('document.getElementById("shortcut-previous").value === "Alt+ArrowLeft"'), 'Shortcut capture did not receive previous binding');
   await keyboardSettings.webContents.executeJavaScript('document.getElementById("shortcuts").requestSubmit()');
   await until(() => keyboardSettings.webContents.executeJavaScript('document.getElementById("shortcuts-result").textContent.includes("已保存")'), 'Custom keyboard form did not save');
   keyboardSettings.close();
@@ -765,6 +788,12 @@ window.selectArticle = (id, delay = 0) => {
     assert.equal(await rc.executeJavaScript(`window.removeCalls.includes(${JSON.stringify(id)})`), false);
   }
   assert.deepEqual(confirmedRemovals, ['success','success-two']);
+  assert.equal(desktop.progress.roundSummary('reading').done, 2);
+  await until(() => shellContents.executeJavaScript('document.querySelectorAll("#progress-lamps .lit").length===2'), 'Confirmed reading did not light two lamps');
+  const beforeRoundReset = desktop.progress.summary().done;
+  await shellContents.executeJavaScript('document.getElementById("round-reset").click()');
+  await until(() => desktop.progress.roundSummary('reading').done === 0, 'New reading round did not reset lamps');
+  assert.equal(desktop.progress.summary().done, beforeRoundReset, 'Round reset must preserve daily reading progress');
   await until(() => shellContents.executeJavaScript('document.getElementById("progress-count").textContent.includes("已完成 2 / 2") && document.getElementById("progress-count").textContent.includes("已达标")'), 'Confirmed removals did not reach the daily goal');
   ipcMain.emit('reader:completed', { sender: oc(), senderFrame: oc().mainFrame }, 'reject');
   assert.equal(await shellContents.executeJavaScript('document.getElementById("reading-progress").value'), 2);

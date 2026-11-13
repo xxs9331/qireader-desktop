@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-for (const action of ['screening', 'toggle-list', 'list-side', 'external', 'cubox-save', 'settings']) $(action).addEventListener('click', () => window.desktop.command(action));
+for (const action of ['screening', 'toggle-list', 'list-side', 'external', 'cubox-save', 'settings', 'round-reset']) $(action).addEventListener('click', () => window.desktop.command(action));
 for (const [id, action] of [['progress-period', 'progress-period'], ['progress-count', 'progress-refresh'], ['progress-older', 'progress-older']]) {
   $(id).addEventListener('click', () => window.desktop.command(action));
 }
@@ -43,6 +43,21 @@ splitter.addEventListener('keydown', event => {
 window.desktop.onEndDrag(endDrag);
 window.desktop.onPreview(images => { $('reader-preview').src = images[0]; $('original-preview').src = images[1]; });
 window.desktop.onState(state => {
+  const lamps = state.progressStyle === 'lamps';
+  $('reading-status').classList.toggle('lamp-style', lamps);
+  $('lamp-round').hidden = !lamps;
+  if (lamps && state.round) {
+    const { total, done, ready } = state.round;
+    $('lamp-count').textContent = ready ? `本轮${state.screening ? '添加' : '阅读'} ${done} / ${total}${done >= total ? ' · 已点亮 ✓' : ''}` : '等待账号识别';
+    $('round-reset').disabled = !ready;
+    const lights = $('progress-lamps');
+    if (lights.children.length !== total) lights.replaceChildren(...Array.from({ length: total }, (_, index) => {
+      const light = document.createElement('span'); light.className = 'progress-lamp'; light.setAttribute('aria-hidden', 'true'); light.title = `第 ${index + 1} 篇`; return light;
+    }));
+    for (const [index, light] of [...lights.children].entries()) light.classList.toggle('lit', ready && index < done);
+    lights.setAttribute('aria-valuemax', total); lights.setAttribute('aria-valuenow', ready ? Math.min(done, total) : 0);
+    lights.setAttribute('aria-valuetext', $('lamp-count').textContent);
+  }
   document.body.classList.toggle('screening-mode', Boolean(state.screening));
   $('screening').textContent = state.screening ? '返回阅读' : '筛选订阅';
   $('screening').setAttribute('aria-pressed', String(Boolean(state.screening)));

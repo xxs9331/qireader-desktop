@@ -33,7 +33,7 @@ function createWindow() {
   browserSession.setPermissionCheckHandler(() => false);
   const win = new BaseWindow({
     width: 1500, height: 960, minWidth: 960, minHeight: 600,
-    title: 'QiReader Desktop 0.16.0', backgroundColor: '#ffffff', icon: iconPath
+    title: `QiReader Desktop ${app.getVersion()}`, backgroundColor: '#ffffff', icon: iconPath
   });
   const shellView = new WebContentsView({ webPreferences: { ...remotePreferences, backgroundThrottling: false, preload: path.join(__dirname, 'shell-preload.cjs') } });
   const shellContents = shellView.webContents;
@@ -146,6 +146,8 @@ function createWindow() {
         shortcuts.configure(message.value); broadcastShortcuts();
       } else if (message?.action === 'scene-configure') {
         scene.configure(message.value);
+      } else if (message?.action === 'round-configure') {
+        progress.configureRound(message.value);
       } else if (message?.action === 'screening-goal') {
         progress.setScreeningGoal(message.value);
       } else if (message?.action === 'goals-configure') progress.setGoals(message.value);
@@ -155,7 +157,7 @@ function createWindow() {
         await shell.openExternal(message.value === 'cc' ? 'https://help.cubox.cc/save/api/' : 'https://help.cubox.pro/save/89d3/');
       } else if (message?.action !== 'settings-info') return { ok: false, error: '未知操作' };
       publish();
-      return { ok: true, info: cubox.summary(), proxy: networkProxy.summary(), shortcuts: shortcuts.summary(), scene: scene.summary(), screening: progress.screeningSummary(), goals: { today: progress.summary('today'), week: progress.summary('week') } };
+      return { ok: true, info: cubox.summary(), proxy: networkProxy.summary(), shortcuts: shortcuts.summary(), scene: scene.summary(), rounds: { reading: progress.roundSummary('reading'), saving: progress.roundSummary('saving') }, screening: progress.screeningSummary(), goals: { today: progress.summary('today'), week: progress.summary('week') } };
     } catch (error) {
       networkProxy.log('settings-action-failed', settingsURL, { pane: 'settings', action: message?.action, page: contents.id });
       return { ok: false, error: message?.action === 'cubox-open-web' ? '无法打开浏览器' : error.message };
@@ -185,7 +187,8 @@ function createWindow() {
 
   function publish() {
     if (!win.isDestroyed()) {
-      shellContents.send('shell:state', { ...state, shortcuts: shortcuts.bindings, progress: state.screening ? progress.screeningSummary() : progress.summary(state.progressPeriod),
+      reader.webContents.send('reader:round-account', progress.active);
+      shellContents.send('shell:state', { ...state, progressStyle: scene.summary().progressStyle, round: progress.roundSummary(state.screening ? 'saving' : 'reading'), shortcuts: shortcuts.bindings, progress: state.screening ? progress.screeningSummary() : progress.summary(state.progressPeriod),
         cubox: { ...cubox.summary(original.webContents.getURL()), busy: collecting || cubox.busy,
           available: Boolean(selectedURL && originalPage.ready && !originalPage.failed && originalPage.status < 400 && !original.webContents.isLoadingMainFrame() && webURL(original.webContents.getURL())) } });
       const pool = { ready: [...preloaded.values()].filter(page => page.ready).map(page => page.url),
@@ -656,6 +659,11 @@ function createWindow() {
     if (state.screening && ['previous', 'next', 'cubox-save', 'external', 'toggle-list', 'list-side', 'drag', 'progress-period', 'progress-older'].includes(action)) return;
     if (action === 'ready') publish();
     if (action === 'settings') openSettings();
+    if (action === 'round-reset') {
+      const kind = state.screening ? 'saving' : 'reading';
+      try { progress.configureRound({ kind, target: progress.roundSummary(kind).total, reset: true }); }
+      catch (error) { state.error = error.message; publish(); }
+    }
     if (action === 'cubox-save' && !collecting) {
       await cubox.ready;
       if (!cubox.summary().configured) { openSettings(); return; }
@@ -758,6 +766,14 @@ function createWindow() {
     }, 1000);
   }
   ipcMain.on('reader:completed', completed);
+  function roundAdded(event, message) {
+    if (!state.screening || event.sender !== reader.webContents || event.senderFrame !== reader.webContents.mainFrame ||
+        !readerURL(event.senderFrame.url) || message?.route !== new URL(event.senderFrame.url).pathname || message.account !== progress.active ||
+        typeof message.account !== 'string' || !message.account.startsWith(new URL(event.senderFrame.url).origin + '|')) return;
+    try { progress.addedToLater(message.account, message.id); }
+    catch (error) { state.error = error.message; publish(); }
+  }
+  ipcMain.on('reader:round-added', roundAdded);
   ipcMain.on('reader:progress-changed', progressChanged);
   ipcMain.on('shell:command', command);
   for (const contents of [shellContents, navigationContents]) {
@@ -792,6 +808,7 @@ function createWindow() {
     ipcMain.removeListener('reader:error', readerError);
     ipcMain.removeListener('reader:navigation', navigationState);
     ipcMain.removeListener('reader:completed', completed);
+    ipcMain.removeListener('reader:round-added', roundAdded);
     ipcMain.removeListener('reader:progress-changed', progressChanged);
     ipcMain.removeListener('shell:command', command);
     ipcMain.removeListener('desktop:shortcut', shortcut);

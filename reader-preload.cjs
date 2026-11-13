@@ -1,6 +1,8 @@
 const { ipcRenderer } = require('electron');
 let bindings = {};
 let screening = false;
+let roundAccount = null;
+ipcRenderer.on('reader:round-account', (_event, key) => { roundAccount = key; });
 ipcRenderer.on('desktop:bindings', (_event, value) => { bindings = value; });
 ipcRenderer.on('reader:screening', (_event, value) => { screening = value === true; });
 
@@ -123,18 +125,25 @@ if (process.isMainFrame && process.argv.includes('--qireader-list') && ['https:/
       if (adding.has(id)) return;
       adding.add(id); row.setAttribute('data-desktop-saving', 'true');
       const route = location.pathname;
+      const account = roundAccount;
       addingQueue = addingQueue.catch(() => {}).then(async () => {
         if (!screenActive() || location.pathname !== route || !row.isConnected || row.getAttribute('data-is-entry') !== id) return;
         const button = row.querySelector('button[title="稍后阅读"],button[title="Read Later"]');
         if (button) {
           const fill = button.querySelector('svg')?.getAttribute('fill');
-          if (!fill || fill === 'none') await changeLater(row, id, true, () => button.click());
+          if (!fill || fill === 'none') {
+            await changeLater(row, id, true, () => button.click());
+            ipcRenderer.send('reader:round-added', { account, id, route });
+          }
         } else {
           const bounds = row.getBoundingClientRect();
           row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: bounds.left + 20, clientY: bounds.top + 20 }));
           const item = await waitFor(() => menuItem(['稍后阅读', 'Read Later']));
           if (!screenActive() || location.pathname !== route || !row.isConnected || row.getAttribute('data-is-entry') !== id) return;
-          if (!checked(item)) await changeLater(row, id, true, () => item.click());
+          if (!checked(item)) {
+            await changeLater(row, id, true, () => item.click());
+            ipcRenderer.send('reader:round-added', { account, id, route });
+          }
           else dismissMenu(item);
         }
         if (row.isConnected && row.getAttribute('data-is-entry') === id) row.setAttribute('data-desktop-added', 'true');
