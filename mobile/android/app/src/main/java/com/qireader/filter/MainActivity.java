@@ -89,13 +89,10 @@ public final class MainActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         LinearLayout column = new LinearLayout(this); column.setOrientation(LinearLayout.VERTICAL);
         root.addView(column, new FrameLayout.LayoutParams(-1, -1));
-        LinearLayout toolbar = new LinearLayout(this); toolbar.setGravity(Gravity.CENTER_VERTICAL); toolbar.setBackgroundColor(Color.WHITE);
-        TextView title = text("筛选订阅", 16); title.setGravity(Gravity.CENTER_VERTICAL);
-        toolbar.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
-        TextView settings = text("设置", 14); settings.setContentDescription("设置每轮数量"); settings.setOnClickListener(v -> settings());
-        toolbar.addView(settings); column.addView(toolbar);
         error = text("", 13); error.setTextColor(0xff993333); error.setVisibility(View.GONE);
-        error.setOnClickListener(v -> { error.setVisibility(View.GONE); web.reload(); }); column.addView(error);
+        error.setOnClickListener(v -> new AlertDialog.Builder(this).setItems(new String[]{"重试", "设置"}, (dialog, choice) -> {
+            if (choice == 0) { error.setVisibility(View.GONE); web.reload(); } else settings();
+        }).show()); column.addView(error);
         web = new WebView(this); column.addView(web, new LinearLayout.LayoutParams(-1, 0, 1));
         LinearLayout overlay = new LinearLayout(this); overlay.setOrientation(LinearLayout.VERTICAL); overlay.setGravity(Gravity.CENTER);
         overlay.setBackgroundColor(0x99000000); overlay.setClickable(true); overlay.setFocusable(true);
@@ -113,6 +110,7 @@ public final class MainActivity extends Activity {
         web.getSettings().setAllowFileAccess(false); web.getSettings().setAllowContentAccess(false);
         web.getSettings().setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         web.getSettings().setSupportMultipleWindows(false);
+        web.setOnLongClickListener(v -> !account.isEmpty());
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, false);
         web.setWebChromeClient(new WebChromeClient());
@@ -149,6 +147,7 @@ public final class MainActivity extends Activity {
                 if (user.length() > 512) throw new IllegalArgumentException("账号无效");
                 String key = user.isEmpty() ? "" : source + "|" + user;
                 if (action.equals("ready")) account = key;
+                else if (action.equals("settings")) settings();
                 else if (action.equals("saved")) {
                     if (account.isEmpty() || !account.equals(key)) throw new IllegalArgumentException("账号已变更，请重新点击文章");
                     Round value = round().add(input.getString("id"));

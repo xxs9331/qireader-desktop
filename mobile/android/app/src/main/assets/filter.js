@@ -13,7 +13,7 @@
     pending.set(request, { resolve, reject, timer });
     bridge.postMessage(JSON.stringify({ request, action, ...value }));
   });
-  const update = value => { state = value; };
+  const update = value => { state = value; renderLamps(); };
   bridge.onmessage = event => {
     try {
       const result = JSON.parse(event.data), item = pending.get(result.request);
@@ -61,6 +61,38 @@
   }
   const dismiss = node => (node || document.activeElement || document.body)
     .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  let controls;
+  function renderLamps() {
+    if (!controls) return;
+    const lamps = controls.querySelector('[role="progressbar"]');
+    const target = Number.isInteger(state.target) ? state.target : 5;
+    const count = Number.isInteger(state.count) ? state.count : 0;
+    if (lamps.children.length !== target) lamps.replaceChildren(...Array.from({ length: target }, () => {
+      const lamp = document.createElement('span'); lamp.setAttribute('aria-hidden', 'true'); return lamp;
+    }));
+    for (const [index, lamp] of [...lamps.children].entries()) lamp.classList.toggle('lit', index < count);
+    lamps.setAttribute('aria-valuemin', '0'); lamps.setAttribute('aria-valuemax', target); lamps.setAttribute('aria-valuenow', count);
+    lamps.setAttribute('aria-label', `本轮已添加 ${count} / ${target} 篇`);
+  }
+  function mergeNavigation() {
+    if (!controls) {
+      controls = document.createElement('div'); controls.id = 'qi-filter-controls';
+      const lamps = document.createElement('div'); lamps.id = 'qi-filter-lamps'; lamps.setAttribute('role', 'progressbar');
+      const settings = document.createElement('button'); settings.type = 'button'; settings.textContent = '⚙'; settings.setAttribute('aria-label', '设置'); settings.title = '设置';
+      settings.addEventListener('click', () => { void send('settings').catch(error => report(error.message)); });
+      controls.append(lamps, settings); renderLamps();
+    }
+    const nav = [...document.querySelectorAll('nav')].find(node => node.id !== 'qi-filter-fallback' && !node.closest('aside,#portal,[data-is-entry]') &&
+      node.getClientRects().length && node.getBoundingClientRect().height <= 100 && node.getBoundingClientRect().top < 100);
+    const fallback = document.getElementById('qi-filter-fallback');
+    if (nav) {
+      if (controls.parentElement !== nav) nav.append(controls);
+      fallback?.remove(); document.documentElement.classList.remove('qi-filter-fallback');
+    } else if (!fallback) {
+      const bar = document.createElement('nav'); bar.id = 'qi-filter-fallback'; bar.append(controls);
+      document.body.prepend(bar); document.documentElement.classList.add('qi-filter-fallback');
+    }
+  }
   async function magazine() {
     const button = [...document.querySelectorAll('button[title="视图选项"],button[title="View Options"]')]
       .find(node => !node.closest('[data-is-entry]'));
@@ -104,6 +136,7 @@
     const capturedUser = user, capturedRoute = location.pathname, capturedEpoch = epoch;
     if (!capturedUser) { report('请先登录 QiReader'); return; }
     adding.add(id); row.setAttribute('data-filter-saving', 'true');
+    let hiddenMenu = false;
     queue = queue.catch(() => {}).then(async () => {
       const active = () => !state.blocked && user === capturedUser && epoch === capturedEpoch && location.pathname === capturedRoute && feedRoute() &&
         row.isConnected && row.getAttribute('data-is-entry') === id;
@@ -119,6 +152,8 @@
         if (pressed !== 'false' && !icon?.hasAttribute('fill')) throw Error('无法确认稍后阅读状态，请刷新核对');
         trigger = () => button.click();
       } else {
+        // Preserve native state checks without ever displaying the automatic context menu.
+        document.documentElement.classList.add('qi-filter-native-menu'); hiddenMenu = true;
         const bounds = row.getBoundingClientRect();
         row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: bounds.left + 20, clientY: bounds.top + 20 }));
         const item = await waitFor(() => menuItem(['稍后阅读', 'Read Later']));
@@ -130,11 +165,23 @@
       if (user !== capturedUser || epoch !== capturedEpoch) throw Error('账号已切换，请刷新核对添加结果');
       await send('saved', { user: capturedUser, id });
       if (row.isConnected && row.getAttribute('data-is-entry') === id) row.setAttribute('data-filter-added', 'true');
-    }).catch(error => report(error.message)).finally(() => {
+    }).catch(error => report(error.message)).finally(async () => {
+      if (hiddenMenu) {
+        dismiss(menuItem(['稍后阅读', 'Read Later']));
+        await new Promise(resolve => requestAnimationFrame(() => {
+          for (const animation of document.getElementById('portal')?.getAnimations({ subtree: true }) || []) {
+            try { animation.finish(); } catch { /* Infinite loading animations cannot be finished. */ }
+          }
+          requestAnimationFrame(() => { document.documentElement.classList.remove('qi-filter-native-menu'); resolve(); });
+        }));
+      }
       adding.delete(id); if (row.getAttribute('data-is-entry') === id) row.removeAttribute('data-filter-saving');
     });
   }
   const entry = event => event.target instanceof Element ? event.target.closest('[data-is-entry]') : null;
+  window.addEventListener('contextmenu', event => {
+    if (event.isTrusted && feedRoute() && entry(event)) { event.preventDefault(); event.stopImmediatePropagation(); }
+  }, true);
   window.addEventListener('pointerdown', event => { if (feedRoute() && entry(event)) event.stopImmediatePropagation(); }, true);
   window.addEventListener('click', event => {
     if (nativeAction) return;
@@ -153,6 +200,7 @@
     const current = location.pathname;
     if (/\/(?:entries|tags)\//.test(current)) { location.replace('/'); return; }
     document.documentElement.classList.toggle('qi-filter-mode', feedRoute());
+    mergeNavigation();
     if (current !== route) {
       route = current; epoch++; configured = '';
       void refresh().catch(() => {});
@@ -165,7 +213,15 @@
     const style = document.createElement('style');
     style.textContent = `[data-focus-container="articleView"],html.qi-filter-mode [data-is-entry] button,a[href^="/tags/!readlater"],a[href^="/tags/!starred"]{display:none!important}
       [data-filter-saving="true"]{opacity:.5}[data-filter-added="true"]{box-shadow:inset 2px 0 #888}
-      html.qi-filter-mode [data-is-entry]{cursor:pointer}`;
+      html.qi-filter-mode [data-is-entry]{cursor:pointer;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;user-select:none}
+      html.qi-filter-native-menu #portal,html.qi-filter-native-menu #portal *{visibility:hidden!important;pointer-events:none!important}
+      #qi-filter-controls{display:flex;align-items:center;gap:8px;flex:0 0 auto;margin-left:auto;padding:0 6px}
+      #qi-filter-controls button{display:block!important;border:0;background:transparent;color:inherit;padding:8px;font:20px sans-serif;-webkit-tap-highlight-color:transparent}
+      #qi-filter-lamps{display:flex;gap:4px;max-width:90px;overflow-x:auto;scrollbar-width:none;padding:4px 0}
+      #qi-filter-lamps span{display:block;width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:#d4d4d4}
+      #qi-filter-lamps span.lit{background:#5b947e}
+      #qi-filter-fallback{position:fixed;top:0;left:0;right:0;height:44px;display:flex;align-items:center;background:Canvas;color:CanvasText;z-index:100}
+      html.qi-filter-fallback body{padding-top:44px}`;
     document.head.append(style);
     new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(routeChanged, 80); }).observe(document.body, { childList: true, subtree: true });
     window.addEventListener('popstate', routeChanged);
