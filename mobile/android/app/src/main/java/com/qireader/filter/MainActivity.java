@@ -3,6 +3,8 @@ package com.qireader.filter;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.SharedPreferences;
+import android.content.Intent;
+import android.content.ActivityNotFoundException;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -90,12 +92,21 @@ public final class MainActivity extends Activity {
     private void fail(String message) {
         error.setText(message); error.setVisibility(View.VISIBLE);
     }
-    private void continueRound() {
-        if (account.isEmpty() || storageFailed) return;
+    private boolean continueRound() {
+        if (account.isEmpty() || storageFailed) return false;
         if (!prefs.edit().putStringSet("round:" + account, new HashSet<>()).commit()) {
-            fail("进度保存失败，请检查手机存储后重试"); return;
+            fail("进度保存失败，请检查手机存储后重试"); return false;
         }
         showState();
+        return true;
+    }
+    private void returnHome() {
+        if (!continueRound()) return;
+        try {
+            startActivity(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (ActivityNotFoundException | SecurityException exception) {
+            Toast.makeText(this, "请按手机主页键返回桌面，本轮已重置", Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override public void onCreate(Bundle saved) {
@@ -119,7 +130,11 @@ public final class MainActivity extends Activity {
         TextView complete = text("本轮完成", 20); complete.setTextColor(Color.WHITE); overlay.addView(complete);
         TextView next = text("继续", 15); next.setTextColor(Color.WHITE); next.setFocusable(true); next.setOnClickListener(v -> continueRound());
         GradientDrawable border = new GradientDrawable(); border.setColor(Color.TRANSPARENT); border.setStroke(dp(1), 0x99ffffff); border.setCornerRadius(dp(4)); next.setBackground(border);
-        overlay.addView(next); shade = overlay; shade.setVisibility(View.GONE); root.addView(shade, new FrameLayout.LayoutParams(-1, -1));
+        TextView home = text("返回桌面", 15); home.setTextColor(Color.WHITE); home.setFocusable(true); home.setOnClickListener(v -> returnHome());
+        home.setBackground(border.getConstantState().newDrawable());
+        LinearLayout actions = new LinearLayout(this); actions.setGravity(Gravity.CENTER); actions.addView(home);
+        LinearLayout.LayoutParams nextLayout = new LinearLayout.LayoutParams(-2, -2); nextLayout.leftMargin = dp(12); actions.addView(next, nextLayout);
+        overlay.addView(actions); shade = overlay; shade.setVisibility(View.GONE); root.addView(shade, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
         configureSystemBars();
         updates = new Updates(this);

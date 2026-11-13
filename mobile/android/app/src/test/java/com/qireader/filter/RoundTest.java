@@ -14,7 +14,9 @@ public class RoundTest {
             assertEquals(i == 4, value.complete());
         }
         assertEquals(5, value.add("extra").ids.size());
-        assertEquals(0, new Round(5, Set.of()).ids.size());
+        Round restarted = new Round(value.target, Set.of());
+        assertEquals(0, restarted.ids.size()); assertFalse(restarted.complete());
+        assertEquals(1, restarted.add("next-round-entry").ids.size());
     }
     @Test public void changingTargetRetainsProgressAndDoesNotMutateStoredSet() {
         Set<String> saved = new HashSet<>(Set.of("a", "b"));
