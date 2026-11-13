@@ -10,6 +10,9 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -23,6 +26,9 @@ import android.webkit.WebViewClient;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.webkit.WebViewCompat;
@@ -49,6 +55,14 @@ public final class MainActivity extends Activity {
     private boolean storageFailed;
     private Updates updates;
     private FrameLayout root;
+    private TextView next;
+    private boolean foreground, settingsOpen;
+    private static final int HOME_ONLY = 0, SHOW_CONTINUE = 1, AUTO_NEXT = 2;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final RestCountdown restCountdown = new RestCountdown();
+    private final Runnable autoNext = () -> {
+        if (restCountdown.finish(account, SystemClock.uptimeMillis())) continueRound();
+    };
     private void configureSystemBars() {
         root.setBackgroundColor(Color.BLACK);
         getWindow().getDecorView().setBackgroundColor(Color.BLACK);
@@ -85,20 +99,30 @@ public final class MainActivity extends Activity {
         try {
             JSONObject value = state();
             shade.setVisibility(value.getBoolean("blocked") ? View.VISIBLE : View.GONE);
+            int mode = prefs.getInt("rest-mode", HOME_ONLY);
+            next.setVisibility(mode == SHOW_CONTINUE ? View.VISIBLE : View.GONE);
+            long delay = restCountdown.update(foreground && !settingsOpen && mode == AUTO_NEXT &&
+                value.getBoolean("blocked") && !storageFailed, account, SystemClock.uptimeMillis());
+            handler.removeCallbacks(autoNext);
+            if (delay >= 0) handler.postDelayed(autoNext, delay);
             web.setImportantForAccessibility(value.getBoolean("blocked") ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
             web.evaluateJavascript("window.qiFilter?.update(" + value + ")", null);
-        } catch (Exception exception) { fail("本地进度无法读取，请勿继续添加"); }
+        } catch (Exception exception) { cancelAutoNext(); fail("本地进度无法读取，请勿继续添加"); }
     }
     private void fail(String message) {
         error.setText(message); error.setVisibility(View.VISIBLE);
     }
     private boolean continueRound() {
+        cancelAutoNext();
         if (account.isEmpty() || storageFailed) return false;
         if (!prefs.edit().putStringSet("round:" + account, new HashSet<>()).commit()) {
             fail("进度保存失败，请检查手机存储后重试"); return false;
         }
         showState();
         return true;
+    }
+    private void cancelAutoNext() {
+        handler.removeCallbacks(autoNext); restCountdown.cancel();
     }
     private void returnHome() {
         if (!continueRound()) return;
@@ -128,7 +152,7 @@ public final class MainActivity extends Activity {
         LinearLayout overlay = new LinearLayout(this); overlay.setOrientation(LinearLayout.VERTICAL); overlay.setGravity(Gravity.CENTER);
         overlay.setBackgroundColor(0x99000000); overlay.setClickable(true); overlay.setFocusable(true);
         TextView complete = text("本轮完成", 20); complete.setTextColor(Color.WHITE); overlay.addView(complete);
-        TextView next = text("继续", 15); next.setTextColor(Color.WHITE); next.setFocusable(true); next.setOnClickListener(v -> continueRound());
+        next = text("继续", 15); next.setTextColor(Color.WHITE); next.setFocusable(true); next.setOnClickListener(v -> continueRound());
         GradientDrawable border = new GradientDrawable(); border.setColor(Color.TRANSPARENT); border.setStroke(dp(1), 0x99ffffff); border.setCornerRadius(dp(4)); next.setBackground(border);
         TextView home = text("返回桌面", 15); home.setTextColor(Color.WHITE); home.setFocusable(true); home.setOnClickListener(v -> returnHome());
         home.setBackground(border.getConstantState().newDrawable());
@@ -216,11 +240,22 @@ public final class MainActivity extends Activity {
     }
 
     private void settings() {
+        if (settingsOpen) return;
+        settingsOpen = true; cancelAutoNext();
         LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(24), 0, dp(24), 0);
         EditText target = new EditText(this); target.setInputType(InputType.TYPE_CLASS_NUMBER); target.setText(String.valueOf(prefs.getInt("target", 5))); target.setSelectAllOnFocus(true);
         content.addView(text("每轮加入稍后阅读的篇数（1–100）", 14)); content.addView(target);
+        content.addView(text("本轮完成后", 14));
+        RadioGroup modes = new RadioGroup(this);
+        for (String label : new String[]{"仅显示返回桌面", "显示返回桌面和继续", "3 秒后自动进入下一轮"}) {
+            RadioButton option = new RadioButton(this); option.setId(View.generateViewId()); option.setText(label); modes.addView(option);
+        }
+        int savedMode = prefs.getInt("rest-mode", HOME_ONLY);
+        modes.check(modes.getChildAt(savedMode >= HOME_ONLY && savedMode <= AUTO_NEXT ? savedMode : HOME_ONLY).getId());
+        content.addView(modes);
         TextView update = text("检查更新", 14); update.setOnClickListener(v -> updates.check(true)); content.addView(update);
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("每轮数量").setView(content)
+        ScrollView scroll = new ScrollView(this); scroll.addView(content);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("设置").setView(scroll)
             .setPositiveButton("保存", null).setNegativeButton("取消", null)
             .setNeutralButton("切换站点", (d, w) -> new AlertDialog.Builder(this).setItems(new String[]{"qireader.com", "qireader.com.cn"}, (choice, index) -> {
                 origin = index == 0 ? "https://www.qireader.com" : "https://www.qireader.com.cn";
@@ -229,20 +264,25 @@ public final class MainActivity extends Activity {
         dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             try {
                 int value = Integer.parseInt(target.getText().toString()); new Round(value, Collections.emptySet());
-                if (!prefs.edit().putInt("target", value).commit()) throw new IllegalStateException("设置保存失败");
-                dialog.dismiss(); showState();
+                int mode = modes.indexOfChild(modes.findViewById(modes.getCheckedRadioButtonId()));
+                if (!prefs.edit().putInt("target", value).putInt("rest-mode", mode).commit()) {
+                    fail("设置保存失败，请检查手机存储后重试"); return;
+                }
+                dialog.dismiss();
             } catch (Exception exception) { target.setError("请输入 1–100 的整数"); }
-        })); dialog.show();
+        }));
+        dialog.setOnDismissListener(d -> { settingsOpen = false; showState(); });
+        dialog.show();
     }
     @Override public void onBackPressed() {
         if (shade.getVisibility() == View.VISIBLE) { continueRound(); return; }
         if (web.canGoBack()) web.goBack(); else super.onBackPressed();
     }
-    @Override protected void onPause() { super.onPause(); web.onPause(); CookieManager.getInstance().flush(); }
-    @Override protected void onResume() { super.onResume(); if (web != null) { configureSystemBars(); web.onResume(); web.evaluateJavascript("window.qiFilter?.refresh()", null); } }
+    @Override protected void onPause() { foreground = false; cancelAutoNext(); super.onPause(); web.onPause(); CookieManager.getInstance().flush(); }
+    @Override protected void onResume() { super.onResume(); foreground = true; if (web != null) { configureSystemBars(); web.onResume(); showState(); web.evaluateJavascript("window.qiFilter?.refresh()", null); } }
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
         if (request == Updates.INSTALL_PERMISSION && updates != null && getPackageManager().canRequestPackageInstalls()) updates.install();
     }
-    @Override protected void onDestroy() { web.destroy(); super.onDestroy(); }
+    @Override protected void onDestroy() { cancelAutoNext(); web.destroy(); super.onDestroy(); }
 }
